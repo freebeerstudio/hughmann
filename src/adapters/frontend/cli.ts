@@ -7,14 +7,22 @@ const DIM_COPPER = (text: string) => `\x1b[38;2;120;80;30m${text}\x1b[0m`
 
 /**
  * readline-based CLI chat frontend.
- * Supports slash commands: /domain, /domains, /context, /reload, /clear, /help, /exit
  */
 export async function startChatLoop(runtime: Runtime): Promise<void> {
   const systemName = runtime.context.config.systemName
   const ownerName = runtime.context.config.ownerName
 
+  // Resume latest session or start a new one
+  const resumed = runtime.resumeLatest()
+  const sessionInfo = runtime.getSessionInfo()
+
   console.log()
   console.log(`  ${GOLD(systemName)} is online. ${DIM_COPPER(`Type /help for commands.`)}`)
+  if (resumed && sessionInfo && sessionInfo.messageCount > 0) {
+    console.log(`  ${pc.dim(`Resumed session: ${sessionInfo.title} (${sessionInfo.messageCount} messages)`)}`)
+  } else {
+    console.log(`  ${pc.dim('New session started.')}`)
+  }
   console.log()
 
   const rl = createInterface({
@@ -111,7 +119,7 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
       const domains = runtime.getAvailableDomains()
       console.log()
       for (const d of domains) {
-        const active = d.slug === runtime.activeDomain ? pc.green(' ← active') : ''
+        const active = d.slug === runtime.activeDomain ? pc.green(' \u2190 active') : ''
         const isolation = d.isolation === 'isolated'
           ? pc.yellow(`[isolated]`)
           : pc.blue(`[personal]`)
@@ -123,6 +131,7 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
 
     case '/context': {
       const ctx = runtime.context
+      const session = runtime.getSessionInfo()
       console.log()
       console.log(`  ${pc.bold('System')}: ${ctx.config.systemName}`)
       console.log(`  ${pc.bold('Owner')}: ${ctx.config.ownerName}`)
@@ -131,6 +140,9 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
       console.log(`  ${pc.bold('Active domain')}: ${runtime.activeDomain ?? 'None'}`)
       console.log(`  ${pc.bold('Loaded at')}: ${ctx.loadedAt.toLocaleString()}`)
       console.log(`  ${pc.bold('Adapters')}: ${runtime.router.getAvailableAdapters().map(a => a.name).join(', ')}`)
+      if (session) {
+        console.log(`  ${pc.bold('Session')}: ${session.title} (${session.messageCount} messages)`)
+      }
       console.log()
       return
     }
@@ -150,23 +162,84 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
       return
     }
 
+    case '/new': {
+      runtime.clearHistory()
+      console.log(`  ${pc.green('New session started.')}`)
+      return
+    }
+
+    case '/sessions': {
+      const sessions = runtime.listSessions()
+      if (sessions.length === 0) {
+        console.log(`  ${pc.dim('No past sessions.')}`)
+        return
+      }
+      console.log()
+      const current = runtime.getSessionInfo()
+      for (const s of sessions.slice(0, 10)) {
+        const active = current && s.id === current.id ? pc.green(' \u2190 active') : ''
+        const domain = s.domain ? pc.dim(` [${s.domain}]`) : ''
+        const date = new Date(s.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        const msgs = pc.dim(`${s.messageCount} msgs`)
+        console.log(`  ${pc.bold(s.title)}${domain} ${pc.dim('\u2014')} ${date}, ${msgs}${active}`)
+        console.log(`  ${pc.dim(s.id)}`)
+      }
+      if (sessions.length > 10) {
+        console.log(`  ${pc.dim(`...and ${sessions.length - 10} more`)}`)
+      }
+      console.log()
+      console.log(`  ${pc.dim('Use /resume <id> to switch sessions')}`)
+      console.log()
+      return
+    }
+
+    case '/resume': {
+      if (!args) {
+        console.log(`  ${pc.dim('Usage: /resume <session-id>')}`)
+        console.log(`  ${pc.dim('Use /sessions to see available sessions')}`)
+        return
+      }
+      // Support partial ID matching
+      const sessions = runtime.listSessions()
+      const match = sessions.find(s => s.id === args || s.id.startsWith(args))
+      if (!match) {
+        console.log(`  ${pc.red('No session found matching:')} ${args}`)
+        return
+      }
+      const success = runtime.resumeSession(match.id)
+      if (success) {
+        const info = runtime.getSessionInfo()
+        console.log(`  ${pc.green('Resumed')}: ${info?.title} (${info?.messageCount} messages)`)
+      } else {
+        console.log(`  ${pc.red('Failed to resume session')}`)
+      }
+      return
+    }
+
     case '/clear': {
       runtime.clearHistory()
-      console.log(`  ${pc.dim('Conversation history cleared.')}`)
+      console.log(`  ${pc.green('New session started.')}`)
       return
     }
 
     case '/help': {
       console.log()
-      console.log(`  ${pc.bold('Commands')}:`)
-      console.log(`    ${pc.cyan('/domain <name>')}  Switch to a domain context`)
-      console.log(`    ${pc.cyan('/domain')}         Clear domain (general context)`)
-      console.log(`    ${pc.cyan('/domains')}        List all domains with isolation status`)
-      console.log(`    ${pc.cyan('/context')}        Show loaded context info`)
-      console.log(`    ${pc.cyan('/reload')}         Re-read context documents from disk`)
-      console.log(`    ${pc.cyan('/clear')}          Clear conversation history`)
-      console.log(`    ${pc.cyan('/help')}           Show this help`)
-      console.log(`    ${pc.cyan('/exit')}           Exit`)
+      console.log(`  ${pc.bold('Conversation')}:`)
+      console.log(`    ${pc.cyan('/new')}              Start a new session`)
+      console.log(`    ${pc.cyan('/sessions')}         List past sessions`)
+      console.log(`    ${pc.cyan('/resume <id>')}      Resume a previous session`)
+      console.log(`    ${pc.cyan('/clear')}            Start a new session (alias for /new)`)
+      console.log()
+      console.log(`  ${pc.bold('Domains')}:`)
+      console.log(`    ${pc.cyan('/domain <name>')}    Switch to a domain context`)
+      console.log(`    ${pc.cyan('/domain')}           Clear domain (general context)`)
+      console.log(`    ${pc.cyan('/domains')}          List all domains with isolation status`)
+      console.log()
+      console.log(`  ${pc.bold('System')}:`)
+      console.log(`    ${pc.cyan('/context')}          Show loaded context info`)
+      console.log(`    ${pc.cyan('/reload')}           Re-read context documents from disk`)
+      console.log(`    ${pc.cyan('/help')}             Show this help`)
+      console.log(`    ${pc.cyan('/exit')}             Exit`)
       console.log()
       return
     }

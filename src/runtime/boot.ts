@@ -5,6 +5,7 @@ import { loadContext } from './context-loader.js'
 import { createModelAdapters } from '../adapters/model/index.js'
 import { ModelRouter } from './model-router.js'
 import { Runtime } from './runtime.js'
+import { SessionManager } from './session.js'
 
 export interface BootResult {
   success: boolean
@@ -69,9 +70,10 @@ export function boot(): BootResult {
     return { success: false, warnings, errors }
   }
 
-  // Create router and runtime
+  // Create router, session manager, and runtime
   const router = new ModelRouter(adapters)
-  const runtime = new Runtime(contextResult.store, router, contextDir)
+  const sessions = new SessionManager(HUGHMANN_HOME)
+  const runtime = new Runtime(contextResult.store, router, contextDir, sessions)
 
   return { success: true, runtime, warnings, errors }
 }

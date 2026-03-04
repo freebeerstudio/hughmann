@@ -1,8 +1,10 @@
 import type { ContextStore, DomainContext } from '../types/context.js'
-import type { ModelMessage, ModelStreamChunk } from '../types/model.js'
+import type { ModelStreamChunk } from '../types/model.js'
 import { ModelRouter } from './model-router.js'
 import { buildSystemPrompt } from './system-prompt-builder.js'
 import { reloadContext } from './context-loader.js'
+import { SessionManager } from './session.js'
+import type { SessionSummary } from './session.js'
 
 /**
  * The central runtime orchestrator. Holds state, handles turns, manages domain switching.
@@ -10,20 +12,22 @@ import { reloadContext } from './context-loader.js'
 export class Runtime {
   context: ContextStore
   router: ModelRouter
+  sessions: SessionManager
   activeDomain: string | null = null
 
   private contextDir: string
-  private conversationHistory: ModelMessage[] = []
 
-  constructor(context: ContextStore, router: ModelRouter, contextDir: string) {
+  constructor(context: ContextStore, router: ModelRouter, contextDir: string, sessions: SessionManager) {
     this.context = context
     this.router = router
     this.contextDir = contextDir
+    this.sessions = sessions
   }
 
   setDomain(slug: string | null): void {
     if (slug === null) {
       this.activeDomain = null
+      this.sessions.setDomain(null)
       return
     }
     if (!this.context.domains.has(slug)) {
@@ -33,16 +37,22 @@ export class Runtime {
       )
       if (match) {
         this.activeDomain = match
+        this.sessions.setDomain(match)
       } else {
         throw new Error(`Unknown domain: ${slug}. Use /domains to see available domains.`)
       }
     } else {
       this.activeDomain = slug
+      this.sessions.setDomain(slug)
     }
   }
 
   async chat(userMessage: string): Promise<string> {
-    this.conversationHistory.push({ role: 'user', content: userMessage })
+    const session = this.sessions.getOrCreate(this.activeDomain)
+    const contextMessages = [
+      ...this.sessions.getContextMessages(),
+      { role: 'user' as const, content: userMessage },
+    ]
 
     const systemPrompt = buildSystemPrompt(this.context, {
       activeDomain: this.activeDomain ?? undefined,
@@ -51,17 +61,21 @@ export class Runtime {
     })
 
     const response = await this.router.route({
-      messages: this.conversationHistory,
+      messages: contextMessages,
       complexity: 'conversational',
     }, systemPrompt)
 
-    this.conversationHistory.push({ role: 'assistant', content: response.content })
+    this.sessions.addTurn(userMessage, response.content)
 
     return response.content
   }
 
   async *chatStream(userMessage: string): AsyncIterable<ModelStreamChunk> {
-    this.conversationHistory.push({ role: 'user', content: userMessage })
+    const session = this.sessions.getOrCreate(this.activeDomain)
+    const contextMessages = [
+      ...this.sessions.getContextMessages(),
+      { role: 'user' as const, content: userMessage },
+    ]
 
     const systemPrompt = buildSystemPrompt(this.context, {
       activeDomain: this.activeDomain ?? undefined,
@@ -72,7 +86,7 @@ export class Runtime {
     let fullResponse = ''
 
     for await (const chunk of this.router.routeStream({
-      messages: this.conversationHistory,
+      messages: contextMessages,
       complexity: 'conversational',
     }, systemPrompt)) {
       if (chunk.type === 'text') {
@@ -81,7 +95,7 @@ export class Runtime {
       yield chunk
     }
 
-    this.conversationHistory.push({ role: 'assistant', content: fullResponse })
+    this.sessions.addTurn(userMessage, fullResponse)
   }
 
   reloadContext(): { domainCount: number; docCount: number; warnings: string[] } {
@@ -105,7 +119,40 @@ export class Runtime {
     return Array.from(this.context.domains.values())
   }
 
+  /** Clear history and start a fresh session */
   clearHistory(): void {
-    this.conversationHistory = []
+    this.sessions.newSession(this.activeDomain)
+  }
+
+  /** Resume a specific session by ID */
+  resumeSession(id: string): boolean {
+    const session = this.sessions.load(id)
+    if (!session) return false
+    this.activeDomain = session.domain
+    return true
+  }
+
+  /** Resume the most recent session */
+  resumeLatest(): boolean {
+    const session = this.sessions.loadLatest()
+    if (!session) return false
+    this.activeDomain = session.domain
+    return true
+  }
+
+  /** List past sessions */
+  listSessions(): SessionSummary[] {
+    return this.sessions.list()
+  }
+
+  /** Get current session info */
+  getSessionInfo(): { id: string; title: string; messageCount: number } | null {
+    const current = this.sessions.getCurrent()
+    if (!current) return null
+    return {
+      id: current.id,
+      title: current.title,
+      messageCount: current.messages.length,
+    }
   }
 }
