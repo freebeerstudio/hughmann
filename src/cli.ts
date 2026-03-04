@@ -112,6 +112,11 @@ switch (flags.command) {
     break
   }
 
+  case 'serve': {
+    await startMcpServer()
+    break
+  }
+
   case 'status': {
     await runBuiltinSkill('status', flags)
     break
@@ -383,6 +388,13 @@ async function startTelegram(flags: CliFlags) {
 }
 
 /**
+ * `hughmann serve` — Start as an MCP server (stdio transport)
+ */
+async function startMcpServer() {
+  await import('./mcp-server.js')
+}
+
+/**
  * `hughmann schedule [install|list|remove]` — Manage scheduled skills via launchd
  */
 async function manageSchedule(flags: CliFlags) {
@@ -491,6 +503,7 @@ function showUsage() {
   console.log(`    ${pc.cyan('domains')}           List configured domains`)
   console.log(`    ${pc.cyan('schedule')}          Manage scheduled skills ${pc.dim('(launchd)')}`)
   console.log(`    ${pc.cyan('telegram')}          Start Telegram bot`)
+  console.log(`    ${pc.cyan('serve')}             Start as MCP server ${pc.dim('(stdio)')}`)
   console.log()
   console.log(`  ${pc.bold('Flags')}:`)
   console.log(`    ${pc.cyan('-c, --continue')}    Resume the most recent session`)

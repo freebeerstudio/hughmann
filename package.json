@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "hughmann": "dist/cli.js",
-    "create-hughmann": "dist/index.js"
+    "create-hughmann": "dist/index.js",
+    "hughmann-mcp": "dist/mcp-server.js"
   },
   "scripts": {
     "dev": "tsx src/cli.ts",
@@ -29,6 +30,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.0",
     "@clack/prompts": "^1.1.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@supabase/supabase-js": "^2.98.0",
     "@types/node": "^25.3.3",
     "grammy": "^1.41.1",
