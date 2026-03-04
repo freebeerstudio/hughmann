@@ -4,8 +4,10 @@ import pc from 'picocolors'
 import { showBanner } from './banner.js'
 import { runOnboarding } from './onboarding/index.js'
 import { generateContextDocuments } from './generators/context-docs.js'
-import { HUGHMANN_HOME, saveConfig } from './config.js'
+import { HUGHMANN_HOME } from './config.js'
 import { homedir } from 'node:os'
+
+const GOLD = (text: string) => `\x1b[38;2;200;140;60m${text}\x1b[0m`
 
 async function main() {
   showBanner()
@@ -35,21 +37,47 @@ async function main() {
     'Files Created'
   )
 
-  // Next steps
   console.log()
-  console.log(`  ${pc.bold(`${result.system.name} is ready.`)}`)
+  console.log(`  ${GOLD(result.system.name)} knows who you are.`)
   console.log()
   console.log(`  Your context documents are in ${pc.cyan(displayHome + '/context/')}`)
-  console.log(`  These are the foundation of everything ${result.system.name} does.`)
-  console.log(`  Review and edit them anytime. They're plain markdown.`)
-  console.log()
-  console.log(`  ${pc.dim('What happens next:')}`)
-  console.log(`  ${pc.dim(`1. Review your context docs (especially master-plan.md)`)}`)
-  console.log(`  ${pc.dim(`2. Configure your infrastructure (API keys, services)`)}`)
-  console.log(`  ${pc.dim(`3. Start ${result.system.name}: npm run start`)}`)
+  console.log(`  These are plain markdown. Review and edit them anytime.`)
   console.log()
 
-  p.outro(`${result.system.name} knows who you are. Time to build.`)
+  // Offer to launch first conversation
+  const startChat = await p.confirm({
+    message: `Start your first conversation with ${result.system.name}?`,
+    initialValue: true,
+  })
+
+  if (p.isCancel(startChat) || !startChat) {
+    console.log()
+    console.log(`  ${pc.dim('When you\'re ready, run:')} ${pc.cyan('hughmann chat')}`)
+    console.log()
+    p.outro(`${result.system.name} will be here.`)
+    return
+  }
+
+  // Boot and launch chat
+  console.log()
+  const { boot } = await import('./runtime/boot.js')
+  const bootResult = boot()
+
+  if (!bootResult.success || !bootResult.runtime) {
+    console.log()
+    for (const error of bootResult.errors) {
+      console.log(`  ${pc.red('\u2717')} ${error}`)
+    }
+    console.log()
+    console.log(`  ${pc.dim('Fix the above and run:')} ${pc.cyan('hughmann chat')}`)
+    return
+  }
+
+  // Mark this as first boot so Hugh Mann introduces itself
+  bootResult.runtime.firstBoot = true
+
+  const { startChatLoop } = await import('./adapters/frontend/cli.js')
+  await startChatLoop(bootResult.runtime, true)
 }
 
 main().catch((err) => {

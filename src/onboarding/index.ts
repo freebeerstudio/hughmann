@@ -192,7 +192,7 @@ async function handleExit(config: HughmannConfig): Promise<null> {
     const done = completedCount(config)
     p.log.warn(
       `${5 - done} section${5 - done !== 1 ? 's' : ''} still need configuration.\n` +
-      `  Run ${pc.cyan('npm run dev')} anytime to pick up where you left off.`
+      `  Run ${pc.cyan('hughmann setup')} anytime to pick up where you left off.`
     )
   }
   p.outro(pc.dim('See you next time.'))

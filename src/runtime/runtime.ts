@@ -21,6 +21,7 @@ export class Runtime {
   writer: ContextWriter
   memory: MemoryManager
   activeDomain: string | null = null
+  firstBoot = false
 
   private contextDir: string
   private turnsSinceDistill = 0
@@ -162,6 +163,7 @@ export class Runtime {
   async distillCurrent(): Promise<string | null> {
     const session = this.sessions.getCurrent()
     if (!session || session.messages.length < 2) return null
+    if (this.memory.isDistilled(session.id)) return null
 
     const result = await this.memory.distill(session)
     if (result) {
@@ -185,7 +187,13 @@ export class Runtime {
       activeDomain: this.activeDomain ?? undefined,
       includeMasterPlan: true,
       includeGrowth: false,
+      firstBoot: this.firstBoot,
     })
+
+    // Only use firstBoot for the first message
+    if (this.firstBoot) {
+      this.firstBoot = false
+    }
 
     if (recentMemories) {
       prompt += '\n\n---\n\n## Recent Memory\n\n' +

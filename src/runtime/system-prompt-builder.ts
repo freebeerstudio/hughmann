@@ -4,6 +4,7 @@ export interface PromptOptions {
   activeDomain?: string
   includeMasterPlan?: boolean
   includeGrowth?: boolean
+  firstBoot?: boolean
   maxLength?: number
 }
 
@@ -27,6 +28,7 @@ export function buildSystemPrompt(context: ContextStore, options?: PromptOptions
     activeDomain,
     includeMasterPlan = true,
     includeGrowth = false,
+    firstBoot = false,
     maxLength,
   } = options ?? {}
 
@@ -84,6 +86,18 @@ export function buildSystemPrompt(context: ContextStore, options?: PromptOptions
     `- **Mode**: conversational`,
   ]
   sections.push(envLines.join('\n'))
+
+  // 8. First boot instructions
+  if (firstBoot) {
+    sections.push([
+      '## First Conversation',
+      '',
+      'This is your very first conversation with your owner. They just finished setting up your context documents.',
+      'Introduce yourself briefly. Acknowledge what you know about them from the context docs.',
+      'Show that you understand their goals and domains. Be genuine, not performative.',
+      'Ask what they want to work on first.',
+    ].join('\n'))
+  }
 
   let prompt = sections.join('\n\n---\n\n')
 

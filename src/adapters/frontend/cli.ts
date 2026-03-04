@@ -8,7 +8,7 @@ const DIM_COPPER = (text: string) => `\x1b[38;2;120;80;30m${text}\x1b[0m`
 // Store numbered session list for /resume by number
 let lastSessionList: { id: string }[] = []
 
-export async function startChatLoop(runtime: Runtime): Promise<void> {
+export async function startChatLoop(runtime: Runtime, firstBoot: boolean = false): Promise<void> {
   const systemName = runtime.context.config.systemName
   const ownerName = runtime.context.config.ownerName
 
@@ -16,8 +16,13 @@ export async function startChatLoop(runtime: Runtime): Promise<void> {
   const initResult = await runtime.initSession()
 
   console.log()
-  console.log(`  ${GOLD(systemName)} is online. ${DIM_COPPER(`Type /help for commands.`)}`)
-  console.log(`  ${pc.dim(initResult.message)}`)
+  if (firstBoot) {
+    console.log(`  ${GOLD(systemName)} is online for the first time.`)
+    console.log(`  ${pc.dim(`Say hello. ${systemName} already knows who you are.`)}`)
+  } else {
+    console.log(`  ${GOLD(systemName)} is online. ${DIM_COPPER(`Type /help for commands.`)}`)
+    console.log(`  ${pc.dim(initResult.message)}`)
+  }
   console.log()
 
   const rl = createInterface({
