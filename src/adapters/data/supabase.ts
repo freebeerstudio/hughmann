@@ -122,7 +122,7 @@ export class SupabaseAdapter implements DataAdapter {
     })
   }
 
-  async getRecentMemories(days = 3): Promise<{
+  async getRecentMemories(days = 3, domain?: string | string[]): Promise<{
     content: string
     domain: string | null
     memory_date: string
@@ -133,12 +133,21 @@ export class SupabaseAdapter implements DataAdapter {
     const since = new Date()
     since.setDate(since.getDate() - days)
 
-    const { data } = await this.client
+    let query = this.client
       .from('memories')
       .select('content, domain, memory_date, created_at')
       .gte('memory_date', since.toISOString().split('T')[0])
       .order('created_at', { ascending: false })
 
+    if (domain) {
+      if (Array.isArray(domain)) {
+        query = query.in('domain', domain)
+      } else {
+        query = query.eq('domain', domain)
+      }
+    }
+
+    const { data } = await query
     return data ?? []
   }
 
@@ -292,6 +301,125 @@ export class SupabaseAdapter implements DataAdapter {
 
     return data ?? []
   }
+
+  // ─── Knowledge Base ──────────────────────────────────────────────────────
+
+  async upsertKbNode(node: {
+    vault: string
+    filePath: string
+    title: string
+    content: string
+    embedding?: number[]
+    frontmatter?: Record<string, unknown>
+    nodeType?: string
+    lastModified?: string
+    customerId?: string
+  }): Promise<string | null> {
+    if (!this.ready) return null
+
+    const row: Record<string, unknown> = {
+      vault: node.vault,
+      file_path: node.filePath,
+      title: node.title,
+      content: node.content,
+      frontmatter: node.frontmatter ?? {},
+      node_type: node.nodeType ?? 'note',
+      last_modified: node.lastModified ?? new Date().toISOString(),
+      synced_at: new Date().toISOString(),
+      customer_id: node.customerId ?? domainToCustomerId(node.vault),
+    }
+
+    if (node.embedding) {
+      row.embedding = `[${node.embedding.join(',')}]`
+    }
+
+    const { data } = await this.client
+      .from('kb_nodes')
+      .upsert(row, { onConflict: 'vault,file_path' })
+      .select('id')
+      .single()
+
+    return data?.id ?? null
+  }
+
+  async searchKbNodes(queryEmbedding: number[], options?: {
+    limit?: number
+    vault?: string
+    nodeType?: string
+    threshold?: number
+    customerId?: string
+  }): Promise<{
+    id: string
+    vault: string
+    filePath: string
+    title: string
+    content: string
+    similarity: number
+  }[]> {
+    if (!this.ready) return []
+
+    const { data } = await this.client.rpc('search_kb_nodes', {
+      query_embedding: `[${queryEmbedding.join(',')}]`,
+      match_threshold: options?.threshold ?? 0.3,
+      match_count: options?.limit ?? 5,
+      filter_vault: options?.vault ?? null,
+      filter_node_type: options?.nodeType ?? null,
+      p_customer_id: options?.customerId ?? null,
+    })
+
+    return (data ?? []).map((row: Record<string, unknown>) => ({
+      id: String(row.id),
+      vault: String(row.vault),
+      filePath: String(row.file_path),
+      title: String(row.title),
+      content: String(row.content),
+      similarity: Number(row.similarity),
+    }))
+  }
+
+  async deleteKbNode(vault: string, filePath: string): Promise<void> {
+    if (!this.ready) return
+
+    await this.client
+      .from('kb_nodes')
+      .delete()
+      .eq('vault', vault)
+      .eq('file_path', filePath)
+  }
+
+  async getKbNodeByPath(vault: string, filePath: string): Promise<{
+    id: string
+    contentHash?: string
+    lastModified?: string
+  } | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('kb_nodes')
+      .select('id, last_modified')
+      .eq('vault', vault)
+      .eq('file_path', filePath)
+      .single()
+
+    if (!data) return null
+    return {
+      id: data.id,
+      lastModified: data.last_modified,
+    }
+  }
+}
+
+// ─── Domain → Customer ID Mapping ───────────────────────────────────────────
+
+const CUSTOMER_IDS: Record<string, string> = {
+  omnissa: '926a785c-2964-4eef-973c-c82f768d8a56',
+  fbs: 'fdd7ce7f-5194-4dae-91c5-fd6b1b4d6a88',
+  personal: 'fc64558e-2740-4005-883f-53388b7edad7',
+}
+
+export function domainToCustomerId(domain: string | null): string {
+  if (!domain) return CUSTOMER_IDS.personal
+  return CUSTOMER_IDS[domain.toLowerCase()] ?? CUSTOMER_IDS.personal
 }
 
 // ─── SQL Migration ──────────────────────────────────────────────────────────
@@ -315,6 +443,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   domain TEXT,
   messages JSONB NOT NULL DEFAULT '[]',
   message_count INTEGER NOT NULL DEFAULT 0,
+  customer_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -329,6 +458,7 @@ CREATE TABLE IF NOT EXISTS memories (
   domain TEXT,
   content TEXT NOT NULL,
   memory_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  customer_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -341,6 +471,7 @@ CREATE TABLE IF NOT EXISTS decisions (
   decision TEXT NOT NULL,
   reasoning TEXT,
   domain TEXT NOT NULL DEFAULT 'General',
+  customer_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -353,16 +484,119 @@ CREATE TABLE IF NOT EXISTS domain_notes (
   domain TEXT NOT NULL,
   content TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT 'manual',
+  customer_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_domain_notes_domain ON domain_notes (domain);
+
+-- Knowledge base nodes
+CREATE TABLE IF NOT EXISTS kb_nodes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  vault TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  title TEXT,
+  content TEXT,
+  embedding vector(1536),
+  frontmatter JSONB DEFAULT '{}',
+  node_type TEXT,
+  last_modified TIMESTAMPTZ,
+  synced_at TIMESTAMPTZ DEFAULT now(),
+  customer_id UUID,
+  UNIQUE(vault, file_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_nodes_vault ON kb_nodes(vault);
+CREATE INDEX IF NOT EXISTS idx_kb_nodes_type ON kb_nodes(node_type);
+CREATE INDEX IF NOT EXISTS idx_kb_nodes_customer ON kb_nodes(customer_id);
+
+-- Knowledge base edges
+CREATE TABLE IF NOT EXISTS kb_edges (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_node_id UUID REFERENCES kb_nodes(id) ON DELETE CASCADE,
+  target_node_id UUID REFERENCES kb_nodes(id) ON DELETE CASCADE,
+  edge_type TEXT NOT NULL,
+  context TEXT,
+  customer_id UUID
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_edges_source ON kb_edges(source_node_id);
+CREATE INDEX IF NOT EXISTS idx_kb_edges_target ON kb_edges(target_node_id);
+
+-- Context docs (for Trigger.dev cloud access)
+CREATE TABLE IF NOT EXISTS context_docs (
+  id TEXT PRIMARY KEY,
+  doc_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  domain_slug TEXT,
+  isolation_zone TEXT,
+  content_hash TEXT NOT NULL,
+  synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Domain-to-customer mapping function
+CREATE OR REPLACE FUNCTION hughmann_customer_id(p_domain TEXT)
+RETURNS UUID AS $$
+  SELECT CASE lower(p_domain)
+    WHEN 'omnissa' THEN '926a785c-2964-4eef-973c-c82f768d8a56'::uuid
+    WHEN 'fbs' THEN 'fdd7ce7f-5194-4dae-91c5-fd6b1b4d6a88'::uuid
+    ELSE 'fc64558e-2740-4005-883f-53388b7edad7'::uuid
+  END;
+$$ LANGUAGE sql IMMUTABLE;
+
+-- Search KB nodes by vector similarity (exact scan — no approximate index)
+CREATE OR REPLACE FUNCTION search_kb_nodes(
+  query_embedding text,
+  match_threshold float DEFAULT 0.3,
+  match_count int DEFAULT 5,
+  filter_vault text DEFAULT NULL,
+  filter_node_type text DEFAULT NULL,
+  p_customer_id uuid DEFAULT NULL
+) RETURNS TABLE(
+  id uuid,
+  vault text,
+  file_path text,
+  title text,
+  content text,
+  frontmatter jsonb,
+  node_type text,
+  similarity float
+) AS $$
+BEGIN
+  -- Force sequential scan to avoid incomplete results from approximate vector indexes
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_bitmapscan = off;
+
+  RETURN QUERY
+  SELECT
+    kn.id,
+    kn.vault,
+    kn.file_path,
+    kn.title,
+    kn.content,
+    kn.frontmatter,
+    kn.node_type,
+    1 - (kn.embedding <=> query_embedding::vector) AS similarity
+  FROM kb_nodes kn
+  WHERE kn.embedding IS NOT NULL
+    AND 1 - (kn.embedding <=> query_embedding::vector) > match_threshold
+    AND (filter_vault IS NULL OR kn.vault = filter_vault)
+    AND (filter_node_type IS NULL OR kn.node_type = filter_node_type)
+    AND (p_customer_id IS NULL OR kn.customer_id = p_customer_id)
+  ORDER BY kn.embedding <=> query_embedding::vector
+  LIMIT match_count;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Enable Row Level Security
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE decisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE domain_notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_nodes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kb_edges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE context_docs ENABLE ROW LEVEL SECURITY;
 
 -- Allow all operations for service key
 DO $$ BEGIN
@@ -377,6 +611,15 @@ DO $$ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'domain_notes' AND policyname = 'Allow all for service key') THEN
     CREATE POLICY "Allow all for service key" ON domain_notes FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'kb_nodes' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON kb_nodes FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'kb_edges' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON kb_edges FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'context_docs' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON context_docs FOR ALL USING (true);
   END IF;
 END $$;
 `

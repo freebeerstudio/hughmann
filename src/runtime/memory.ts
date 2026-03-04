@@ -4,6 +4,7 @@ import type { ModelAdapter } from '../types/adapters.js'
 import type { EmbeddingAdapter } from '../adapters/embeddings/index.js'
 import type { DataAdapter } from '../adapters/data/types.js'
 import type { Session } from './session.js'
+import type { IsolationZone } from '../types/context.js'
 
 const DISTILL_PROMPT = `You are a memory extraction system. Given a conversation between a user and their AI system, extract the key information worth remembering.
 
@@ -115,9 +116,53 @@ export class MemoryManager {
 
   /**
    * Get recent memories for inclusion in system prompt.
-   * Returns the last N days of memory content.
+   * Domain-aware: when a DataAdapter is available, queries the DB with domain filter.
+   * Falls back to file-based retrieval with domain tag parsing.
+   *
+   * @param days Number of days to look back
+   * @param domain Active domain slug (or null for all)
+   * @param isolation Isolation zone of the active domain
    */
-  getRecentMemories(days: number = 3): string {
+  async getRecentMemories(days: number = 3, domain?: string | null, isolation?: IsolationZone): Promise<string> {
+    // If we have a DataAdapter, prefer DB query (domain-filtered)
+    if (this.dataAdapter) {
+      try {
+        const domainFilter = this.buildDomainFilter(domain ?? null, isolation)
+        const memories = await this.dataAdapter.getRecentMemories(days, domainFilter)
+        if (memories.length > 0) {
+          return memories.map(m => {
+            const tag = m.domain ? ` [${m.domain}]` : ''
+            return `**${m.memory_date}${tag}**\n${m.content}`
+          }).join('\n\n---\n\n')
+        }
+      } catch {
+        // Fall through to file-based
+      }
+    }
+
+    // File-based fallback
+    return this.getRecentMemoriesFromFiles(days, domain ?? null, isolation)
+  }
+
+  /**
+   * Build domain filter for DB queries based on isolation rules.
+   * - Isolated domain → only that domain
+   * - Personal domain → all personal-zone domains (would need domain list, so pass as-is)
+   * - No domain → return undefined (all)
+   */
+  private buildDomainFilter(domain: string | null, isolation?: IsolationZone): string | string[] | undefined {
+    if (!domain) return undefined
+    if (isolation === 'isolated') return domain
+    // For personal zone, return undefined to get all non-isolated memories
+    // The system prompt builder already handles what domains are visible
+    return undefined
+  }
+
+  /**
+   * File-based memory retrieval with domain tag filtering.
+   * Parses `[domain]` tags from daily memory file headers.
+   */
+  private getRecentMemoriesFromFiles(days: number, domain: string | null, isolation?: IsolationZone): string {
     if (!existsSync(this.memoryDir)) return ''
 
     const files = readdirSync(this.memoryDir)
@@ -131,10 +176,38 @@ export class MemoryManager {
     const sections: string[] = []
     for (const file of files) {
       const content = readFileSync(join(this.memoryDir, file), 'utf-8')
-      sections.push(content)
+
+      if (domain && isolation === 'isolated') {
+        // Filter entries to only those tagged with this domain
+        const filtered = this.filterEntriesByDomain(content, domain)
+        if (filtered) sections.push(filtered)
+      } else {
+        sections.push(content)
+      }
     }
 
     return sections.join('\n')
+  }
+
+  /**
+   * Filter daily memory file content to only entries tagged with a specific domain.
+   * Memory entries use format: `### 10:30 AM [domain] — Title`
+   */
+  private filterEntriesByDomain(fileContent: string, domain: string): string {
+    const entries = fileContent.split('---')
+    const filtered = entries.filter(entry => {
+      const match = entry.match(/###\s+[\d:]+\s+[AP]M\s+\[(\w+)\]/)
+      return match && match[1] === domain
+    })
+    return filtered.join('---').trim()
+  }
+
+  /**
+   * Synchronous file-based memory retrieval (for non-async paths).
+   * Domain-aware via file tag parsing.
+   */
+  getRecentMemoriesSync(days: number = 3, domain?: string | null, isolation?: IsolationZone): string {
+    return this.getRecentMemoriesFromFiles(days, domain ?? null, isolation)
   }
 
   /**
@@ -215,6 +288,32 @@ export class MemoryManager {
       const queryEmbedding = await this.embeddings.embed(query)
       return await this.dataAdapter.searchMemories(queryEmbedding, options)
     } catch {
+      return []
+    }
+  }
+
+  /**
+   * Search knowledge base (kb_nodes) for relevant vault content.
+   * Returns matching documents from Obsidian vaults + processed emails.
+   */
+  async searchKnowledge(query: string, options?: {
+    limit?: number
+    vault?: string
+    nodeType?: string
+    threshold?: number
+  }): Promise<{ title: string; content: string; filePath: string; similarity: number }[]> {
+    if (!this.embeddings || !this.dataAdapter) return []
+
+    try {
+      const queryEmbedding = await this.embeddings.embed(query)
+      return await this.dataAdapter.searchKbNodes(queryEmbedding, {
+        limit: options?.limit ?? 5,
+        vault: options?.vault,
+        nodeType: options?.nodeType,
+        threshold: options?.threshold ?? 0.3,
+      })
+    } catch (err) {
+      console.error(`[memory] searchKnowledge failed: ${err instanceof Error ? err.message : String(err)}`)
       return []
     }
   }

@@ -56,7 +56,6 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
     const queryOptions: Record<string, unknown> = {
       model,
       systemPrompt,
-      permissionMode: 'dontAsk',
     }
 
     if (tools?.enabled) {
@@ -77,7 +76,9 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
         queryOptions.mcpServers = tools.mcpServers
       }
     } else {
-      queryOptions.maxTurns = 1
+      // Conversational: deny all tools so model responds from system prompt
+      queryOptions.maxTurns = 3
+      queryOptions.canUseTool = denyAllTools
     }
 
     const q = queryFn({ prompt, options: queryOptions })
@@ -148,8 +149,10 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
         queryOptions.mcpServers = tools.mcpServers
       }
     } else {
-      queryOptions.maxTurns = 1
-      queryOptions.permissionMode = 'dontAsk'
+      // Conversational mode: no tools. Deny all tool use so the model responds
+      // purely from the system prompt (which includes KB search results).
+      queryOptions.maxTurns = 3
+      queryOptions.canUseTool = denyAllTools
     }
 
     const q = queryFn({ prompt, options: queryOptions })
@@ -157,81 +160,103 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
     let lastText = ''
     let currentToolName: string | null = null
 
-    for await (const message of q) {
-      const msg = message as Record<string, unknown>
+    try {
+      for await (const message of q) {
+        const msg = message as Record<string, unknown>
 
-      if (msg.type === 'assistant') {
-        const assistantMsg = msg.message as Record<string, unknown> | undefined
-        const content = assistantMsg?.content
-        if (Array.isArray(content)) {
-          let fullText = ''
-          for (const block of content) {
-            if (block.type === 'text') {
-              fullText += block.text
-            } else if (block.type === 'tool_use') {
-              // Claude is requesting a tool — emit tool_use chunk
-              const toolName = (block.name as string) ?? 'unknown'
-              const input = block.input as Record<string, unknown> | undefined
-              currentToolName = toolName
-              yield {
-                type: 'tool_use',
-                content: formatToolUse(toolName, input),
-                metadata: { toolName, toolId: block.id as string },
+        if (msg.type === 'assistant') {
+          const assistantMsg = msg.message as Record<string, unknown> | undefined
+          const content = assistantMsg?.content
+          if (Array.isArray(content)) {
+            let fullText = ''
+            for (const block of content) {
+              if (block.type === 'text') {
+                fullText += block.text
+              } else if (block.type === 'tool_use') {
+                // Claude is requesting a tool — emit tool_use chunk
+                const toolName = (block.name as string) ?? 'unknown'
+                const input = block.input as Record<string, unknown> | undefined
+                currentToolName = toolName
+                yield {
+                  type: 'tool_use',
+                  content: formatToolUse(toolName, input),
+                  metadata: { toolName, toolId: block.id as string },
+                }
               }
             }
+            if (fullText.length > lastText.length) {
+              yield { type: 'text', content: fullText.slice(lastText.length) }
+              lastText = fullText
+            }
           }
-          if (fullText.length > lastText.length) {
-            yield { type: 'text', content: fullText.slice(lastText.length) }
-            lastText = fullText
+        } else if (msg.type === 'tool_progress') {
+          // Tool is executing
+          const toolName = (msg.tool_name as string) ?? currentToolName ?? 'tool'
+          yield {
+            type: 'tool_progress',
+            content: `${toolName} running...`,
+            metadata: {
+              toolName,
+              toolId: msg.tool_use_id as string,
+            },
           }
-        }
-      } else if (msg.type === 'tool_progress') {
-        // Tool is executing
-        const toolName = (msg.tool_name as string) ?? currentToolName ?? 'tool'
-        yield {
-          type: 'tool_progress',
-          content: `${toolName} running...`,
-          metadata: {
-            toolName,
-            toolId: msg.tool_use_id as string,
-          },
-        }
-      } else if (msg.type === 'tool_use_summary') {
-        // Summary after tool use sequence
-        yield {
-          type: 'status',
-          content: msg.summary as string,
-        }
-      } else if (msg.type === 'result') {
-        const turnCount = msg.num_turns as number | undefined
-        const costUsd = msg.total_cost_usd as number | undefined
+        } else if (msg.type === 'tool_use_summary') {
+          // Summary after tool use sequence
+          yield {
+            type: 'status',
+            content: msg.summary as string,
+          }
+        } else if (msg.type === 'result') {
+          const turnCount = msg.num_turns as number | undefined
+          const costUsd = msg.total_cost_usd as number | undefined
 
-        if (msg.subtype === 'success') {
-          // If there's a result text and we haven't captured text from assistant messages
-          if (msg.result && !lastText) {
-            yield { type: 'text', content: msg.result as string }
+          if (msg.subtype === 'success') {
+            // If there's a result text and we haven't captured text from assistant messages
+            if (msg.result && !lastText) {
+              yield { type: 'text', content: msg.result as string }
+            }
+            yield {
+              type: 'done',
+              content: '',
+              metadata: { turnCount, costUsd },
+            }
+          } else {
+            // Error result
+            const errors = msg.errors as string[] | undefined
+            const errorContent = (errors && errors.length > 0)
+              ? errors.join('; ')
+              : `Agent ended: ${msg.subtype}`
+            console.error(`[claude-oauth] Stream error — subtype: ${msg.subtype}, errors: ${JSON.stringify(errors)}, turns: ${turnCount}`)
+            yield {
+              type: 'error',
+              content: errorContent,
+              metadata: { turnCount, costUsd },
+            }
+            yield { type: 'done', content: '', metadata: { turnCount, costUsd } }
           }
-          yield {
-            type: 'done',
-            content: '',
-            metadata: { turnCount, costUsd },
-          }
-        } else {
-          // Error result
-          const errors = msg.errors as string[] | undefined
-          yield {
-            type: 'error',
-            content: errors?.join('; ') ?? `Agent ended: ${msg.subtype}`,
-            metadata: { turnCount, costUsd },
-          }
-          yield { type: 'done', content: '', metadata: { turnCount, costUsd } }
+          return
         }
-        return
       }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      console.error(`[claude-oauth] Stream threw: ${errMsg}`)
+      yield { type: 'error', content: `Stream error: ${errMsg}` }
     }
 
     yield { type: 'done', content: '' }
   }
+}
+
+/**
+ * Denies all tool use — used in conversational mode where KB data
+ * is already injected into the system prompt.
+ */
+async function denyAllTools(
+  _toolName: string,
+  _input: Record<string, unknown>,
+  _options: Record<string, unknown>,
+): Promise<{ behavior: string; message?: string }> {
+  return { behavior: 'deny', message: 'Respond using the knowledge provided in your system prompt.' }
 }
 
 /**

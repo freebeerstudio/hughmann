@@ -2,6 +2,8 @@ import * as p from '@clack/prompts'
 import pc from 'picocolors'
 import type { InfrastructureChoices } from '../types.js'
 import { setupSupabase } from './supabase-setup.js'
+import { setupTurso } from './turso-setup.js'
+import { collectApiKeys } from './api-keys.js'
 
 export async function collectInfrastructure(systemName: string, existing?: InfrastructureChoices): Promise<InfrastructureChoices | symbol> {
   p.note(
@@ -122,6 +124,58 @@ export async function collectInfrastructure(systemName: string, existing?: Infra
       }
     } else {
       p.log.info(`Run ${pc.cyan('hughmann migrate --apply')} when you're ready to connect Supabase.`)
+    }
+  }
+
+  // Offer Turso setup if selected
+  if (choices.dataEngine === 'turso') {
+    const setupNow = await p.confirm({
+      message: 'Set up Turso connection now?',
+      initialValue: true,
+    })
+
+    if (!p.isCancel(setupNow) && setupNow) {
+      const ok = await setupTurso()
+      if (!ok) {
+        p.log.info(`You can set up Turso later with: ${pc.cyan('hughmann migrate --apply')}`)
+      }
+    } else {
+      p.log.info(`Run ${pc.cyan('hughmann migrate --apply')} when you're ready to connect Turso.`)
+    }
+  }
+
+  // Offer Trigger.dev setup if selected
+  if (choices.executionEngine === 'trigger-dev' || choices.executionEngine === 'hybrid') {
+    const setupNow = await p.confirm({
+      message: 'Set up Trigger.dev connection now?',
+      initialValue: true,
+    })
+
+    if (!p.isCancel(setupNow) && setupNow) {
+      const { setupTriggerDev } = await import('./trigger-setup.js')
+      const ok = await setupTriggerDev()
+      if (!ok) {
+        p.log.info(`You can set up Trigger.dev later with: ${pc.cyan('hughmann setup')} and select trigger-dev.`)
+      }
+    } else {
+      p.log.info(`Run ${pc.cyan('hughmann trigger dev')} when you're ready to set up cloud tasks.`)
+    }
+  }
+
+  // Collect API keys for selected providers and frontends
+  const needsKeys = choices.modelProviders.some(p => p !== 'claude-max') ||
+    choices.frontends.includes('telegram')
+
+  if (needsKeys) {
+    const setupKeys = await p.confirm({
+      message: 'Configure API keys now?',
+      initialValue: true,
+    })
+
+    if (!p.isCancel(setupKeys) && setupKeys) {
+      await collectApiKeys(choices.modelProviders, choices.frontends)
+    } else {
+      p.log.info(`You can add API keys later in ${pc.cyan('~/.hughmann/.env')}`)
     }
   }
 

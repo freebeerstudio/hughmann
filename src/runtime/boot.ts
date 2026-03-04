@@ -141,6 +141,20 @@ export async function boot(): Promise<BootResult> {
     } else {
       warnings.push(`SQLite: ${initResult.error}`)
     }
+  } else if (dataEngine === 'turso') {
+    const tursoUrl = process.env.TURSO_URL
+    const tursoAuthToken = process.env.TURSO_AUTH_TOKEN
+    if (tursoUrl && tursoAuthToken) {
+      const { TursoAdapter } = await import('../adapters/data/turso.js')
+      const adapter = new TursoAdapter({ url: tursoUrl, authToken: tursoAuthToken })
+      const initResult = await adapter.init()
+      if (initResult.success) {
+        warnings.push('Turso connected')
+        dataAdapter = adapter
+      } else {
+        warnings.push(`Turso: ${initResult.error}`)
+      }
+    }
   } else if (process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
     // Fallback: if env vars are set but no config, still try Supabase
     const adapter = new SupabaseAdapter({ url: process.env.SUPABASE_URL, key: process.env.SUPABASE_KEY })

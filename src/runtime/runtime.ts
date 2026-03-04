@@ -89,7 +89,7 @@ export class Runtime {
       { role: 'user' as const, content: userMessage },
     ]
 
-    const systemPrompt = this.buildPrompt()
+    const systemPrompt = await this.buildPromptAsync(userMessage)
 
     const response = await this.router.route({
       messages: contextMessages,
@@ -123,7 +123,7 @@ export class Runtime {
       { role: 'user' as const, content: userMessage },
     ]
 
-    const systemPrompt = this.buildPrompt()
+    const systemPrompt = await this.buildPromptAsync(userMessage)
 
     let fullResponse = ''
 
@@ -168,7 +168,7 @@ export class Runtime {
       { role: 'user' as const, content: task },
     ]
 
-    const systemPrompt = this.buildPrompt()
+    const systemPrompt = await this.buildPromptAsync(task)
 
     let fullResponse = ''
 
@@ -286,9 +286,19 @@ export class Runtime {
     await this.distillCurrent()
   }
 
-  /** Build system prompt including recent memories */
-  private buildPrompt(): string {
-    const recentMemories = this.memory.getRecentMemories(3)
+  /** Build system prompt including recent domain-filtered memories and knowledge search */
+  private async buildPromptAsync(userMessage?: string): Promise<string> {
+    // Get isolation zone for active domain
+    const domainContext = this.activeDomain
+      ? this.context.domains.get(this.activeDomain)
+      : null
+    const isolation = domainContext?.isolation
+
+    const recentMemories = await this.memory.getRecentMemories(
+      3,
+      this.activeDomain,
+      isolation,
+    )
 
     let prompt = buildSystemPrompt(this.context, {
       activeDomain: this.activeDomain ?? undefined,
@@ -298,6 +308,61 @@ export class Runtime {
     })
 
     // Only use firstBoot for the first message
+    if (this.firstBoot) {
+      this.firstBoot = false
+    }
+
+    if (recentMemories) {
+      prompt += '\n\n---\n\n## Recent Memory\n\n' +
+        'Key facts and learnings from recent conversations:\n\n' +
+        recentMemories
+    }
+
+    // Semantic knowledge search — retrieve relevant vault content for the user's message
+    if (userMessage) {
+      try {
+        const kbResults = await this.memory.searchKnowledge(userMessage, {
+          limit: 5,
+          vault: this.activeDomain ?? undefined,
+          threshold: 0.2,
+        })
+
+        if (kbResults.length > 0) {
+          prompt += '\n\n---\n\n## Relevant Knowledge\n\n' +
+            'The following documents from the knowledge base are relevant to the current query:\n\n'
+          for (const result of kbResults) {
+            const truncated = result.content.length > 1500
+              ? result.content.slice(0, 1500) + '\n\n[... truncated ...]'
+              : result.content
+            prompt += `### ${result.title} (${result.filePath})\n\n${truncated}\n\n`
+          }
+        }
+      } catch (err) {
+        console.error(`[runtime] Knowledge search failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
+    return prompt
+  }
+
+  /** Sync build for backward compatibility (sub-agents, etc.) */
+  private buildPrompt(): string {
+    // Get isolation zone for active domain
+    const domainContext = this.activeDomain
+      ? this.context.domains.get(this.activeDomain)
+      : null
+    const isolation = domainContext?.isolation
+
+    // Use sync file-based fallback for non-async paths
+    const recentMemories = this.memory.getRecentMemoriesSync(3, this.activeDomain, isolation)
+
+    let prompt = buildSystemPrompt(this.context, {
+      activeDomain: this.activeDomain ?? undefined,
+      includeMasterPlan: true,
+      includeGrowth: false,
+      firstBoot: this.firstBoot,
+    })
+
     if (this.firstBoot) {
       this.firstBoot = false
     }

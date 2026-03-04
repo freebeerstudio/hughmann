@@ -114,6 +114,10 @@ Run HughMann as a Telegram bot for mobile access.
 
 ### Setup
 
+If you selected Telegram during `hughmann setup`, the wizard prompts for and validates your bot token automatically.
+
+To set up manually:
+
 1. Open Telegram and message [@BotFather](https://t.me/BotFather)
 2. Send `/newbot` and follow the prompts to create your bot
 3. Copy the bot token
@@ -155,21 +159,27 @@ Custom skills are also registered as commands automatically.
 
 ## Supabase
 
-Supabase provides persistent storage with vector search for semantic memory.
+Supabase provides persistent storage with vector search for semantic memory via PostgreSQL + pgvector.
 
 ### Setup
 
+The easiest way is during `hughmann setup` — select Supabase as your data engine and the wizard walks you through connection and table creation.
+
+To set up later:
+
 1. Create a project at [supabase.com](https://supabase.com)
-2. Add credentials to `~/.hughmann/.env`:
+2. Run the interactive setup:
+   ```bash
+   hughmann migrate --apply
+   ```
+3. Or manually add credentials to `~/.hughmann/.env` and run the migration SQL:
    ```
    SUPABASE_URL=https://your-project.supabase.co
-   SUPABASE_KEY=your-anon-key
+   SUPABASE_KEY=your-service-role-key
    ```
-3. Get the migration SQL:
    ```bash
-   hughmann migrate
+   hughmann migrate    # prints SQL to run in Supabase SQL editor
    ```
-4. Run the output in your Supabase SQL editor
 
 ### What Gets Synced
 
@@ -196,6 +206,70 @@ Supabase provides persistent storage with vector search for semantic memory.
 The migration creates all tables, the pgvector extension, an HNSW index for fast cosine similarity search, and a `search_memories()` RPC function.
 
 Supabase is optional. Without it, everything works locally with file-based sessions and memory.
+
+---
+
+## Turso
+
+Turso provides cloud SQLite with edge replication via libSQL. Same schema as local SQLite, but accessible from anywhere.
+
+### Setup
+
+The easiest way is during `hughmann setup` — select Turso as your data engine and the wizard walks you through connection and table creation.
+
+To set up later:
+
+1. Create a database at [turso.tech](https://turso.tech)
+2. Run the interactive setup:
+   ```bash
+   hughmann migrate --apply
+   ```
+3. Or manually add credentials to `~/.hughmann/.env`:
+   ```
+   TURSO_URL=libsql://your-db-name.turso.io
+   TURSO_AUTH_TOKEN=your-auth-token
+   ```
+
+### What Gets Synced
+
+Same as Supabase — sessions, memories, decisions, domain notes, and memory embeddings.
+
+### Tables
+
+| Table | Purpose |
+|-------|---------|
+| `sessions` | Chat sessions with messages (JSON text) |
+| `memories` | Distilled session summaries |
+| `decisions` | Decision log with reasoning |
+| `domain_notes` | Per-domain context notes |
+| `memory_embeddings` | Vector embeddings for semantic search |
+
+### Vector Search
+
+Turso uses brute-force cosine similarity computed in JavaScript (same as local SQLite). This is fast for personal use (< 100k embeddings) but doesn't scale like pgvector.
+
+### Migration SQL
+
+```bash
+hughmann migrate    # prints Turso-compatible SQL when Turso is configured
+```
+
+---
+
+## SQLite
+
+Local SQLite is the simplest data engine — zero configuration, fully offline.
+
+### Setup
+
+Select SQLite during `hughmann setup`. No additional configuration needed. Data is stored at `~/.hughmann/data/hughmann.db`.
+
+### Features
+
+- WAL mode enabled for concurrent reads
+- Same table schema as Turso
+- Brute-force cosine similarity for vector search
+- No network dependency
 
 ---
 
@@ -230,7 +304,7 @@ Works with OpenAI, OpenRouter, Ollama, or any compatible API.
 
 ### Requirements
 
-Both Supabase **and** embedding credentials must be configured for vector memory. Without either, HughMann falls back to file-based recent memory (last 3 days).
+A data engine (Supabase, Turso, or SQLite) **and** embedding credentials must be configured for vector memory. Supabase uses pgvector for fast cosine similarity search; SQLite and Turso use brute-force cosine similarity in JavaScript. Without embeddings configured, HughMann falls back to file-based recent memory (last 3 days).
 
 ### MCP Integration
 

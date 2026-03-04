@@ -222,7 +222,7 @@ server.tool(
     }
 
     // Fall back to file-based recent memories
-    const memories = rt.memory.getRecentMemories(count ?? 5)
+    const memories = await rt.memory.getRecentMemories(count ?? 5)
     if (!memories) {
       return { content: [{ type: 'text', text: 'No memories found.' }] }
     }
@@ -297,6 +297,49 @@ server.tool(
     }
 
     return { content: [{ type: 'text', text: chunks.join('') || 'Task completed.' }] }
+  },
+)
+
+server.tool(
+  'search_knowledge',
+  'Search the knowledge base (Obsidian vaults). Queries vectorized vault documents. Respects domain isolation.',
+  {
+    query: z.string().describe('Search query'),
+    vault: z.string().optional().describe('Filter to a specific vault (omnissa, fbs, personal)'),
+    node_type: z.string().optional().describe('Filter by node type (customer, product, project, etc.)'),
+    count: z.number().optional().describe('Number of results (default: 5)'),
+  },
+  async ({ query, vault, node_type, count }) => {
+    const rt = await getRuntime()
+
+    if (!rt.memory.hasVectorMemory() || !rt.data) {
+      return { content: [{ type: 'text', text: 'Knowledge base not available (requires embeddings + Supabase).' }] }
+    }
+
+    // Search kb_nodes
+    const { createEmbeddingAdapter } = await import('./adapters/embeddings/index.js')
+    const embedAdapter = createEmbeddingAdapter()
+    if (!embedAdapter) {
+      return { content: [{ type: 'text', text: 'Embedding adapter not available.' }] }
+    }
+
+    const queryEmbedding = await embedAdapter.embed(query)
+    const results = await rt.data.searchKbNodes(queryEmbedding, {
+      limit: count ?? 5,
+      vault: vault ?? undefined,
+      nodeType: node_type ?? undefined,
+    })
+
+    if (results.length === 0) {
+      return { content: [{ type: 'text', text: 'No knowledge base results found.' }] }
+    }
+
+    const lines = results.map(r => {
+      const sim = (r.similarity * 100).toFixed(0)
+      return `[${sim}% match] ${r.vault}/${r.filePath}\n**${r.title}**\n${r.content.slice(0, 500)}`
+    })
+
+    return { content: [{ type: 'text', text: lines.join('\n\n---\n\n') }] }
   },
 )
 

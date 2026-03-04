@@ -16,10 +16,12 @@ Run from your terminal. The default command is `chat`.
 | `hughmann status` | Quick status snapshot | `hughmann status` |
 | `hughmann morning` | Morning dashboard | `hughmann morning -q` |
 | `hughmann schedule` | Manage launchd schedules | `hughmann schedule install` |
+| `hughmann mail` | Process Elle mailbox emails | `hughmann mail process` |
 | `hughmann daemon` | Manage background daemon | `hughmann daemon start` |
 | `hughmann telegram` | Start Telegram bot | `hughmann telegram` |
 | `hughmann serve` | Start as MCP server (stdio) | `hughmann serve` |
-| `hughmann migrate` | Output Supabase migration SQL | `hughmann migrate` |
+| `hughmann migrate` | Print migration SQL (auto-detects Supabase/Turso) | `hughmann migrate` |
+| `hughmann migrate --apply` | Connect and create tables (auto-detects engine) | `hughmann migrate --apply` |
 
 ### Global Flags
 
@@ -39,6 +41,15 @@ hughmann schedule install morning   # Install one schedule
 hughmann schedule list              # Show installed schedules
 hughmann schedule remove            # Remove all schedules
 hughmann schedule remove morning    # Remove one schedule
+```
+
+### Mail Subcommands
+
+```bash
+hughmann mail process               # Process new emails from Elle
+hughmann mail process --dry-run     # Classify only, no files written
+hughmann mail process --limit 10    # Process at most 10 emails
+hughmann mail status                # Show last run time + processed count
 ```
 
 ### Daemon Subcommands

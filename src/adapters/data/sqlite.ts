@@ -179,7 +179,7 @@ export class SQLiteAdapter implements DataAdapter {
     `).run(entry.sessionId, entry.domain, entry.content, entry.date)
   }
 
-  async getRecentMemories(days = 3): Promise<{
+  async getRecentMemories(days = 3, domain?: string | string[]): Promise<{
     content: string
     domain: string | null
     memory_date: string
@@ -190,6 +190,26 @@ export class SQLiteAdapter implements DataAdapter {
     const since = new Date()
     since.setDate(since.getDate() - days)
     const sinceStr = since.toISOString().split('T')[0]
+
+    if (domain) {
+      if (Array.isArray(domain)) {
+        const placeholders = domain.map(() => '?').join(',')
+        return this.db.prepare(`
+          SELECT content, domain, memory_date, created_at
+          FROM memories WHERE memory_date >= ? AND domain IN (${placeholders})
+          ORDER BY created_at DESC
+        `).all(sinceStr, ...domain) as {
+          content: string; domain: string | null; memory_date: string; created_at: string
+        }[]
+      }
+      return this.db.prepare(`
+        SELECT content, domain, memory_date, created_at
+        FROM memories WHERE memory_date >= ? AND domain = ?
+        ORDER BY created_at DESC
+      `).all(sinceStr, domain) as {
+        content: string; domain: string | null; memory_date: string; created_at: string
+      }[]
+    }
 
     return this.db.prepare(`
       SELECT content, domain, memory_date, created_at
@@ -370,6 +390,13 @@ export class SQLiteAdapter implements DataAdapter {
 
     return results
   }
+
+  // ─── Knowledge Base (stubs — vault sync requires Supabase for pgvector) ──
+
+  async upsertKbNode(): Promise<string | null> { return null }
+  async searchKbNodes(): Promise<{ id: string; vault: string; filePath: string; title: string; content: string; similarity: number }[]> { return [] }
+  async deleteKbNode(): Promise<void> {}
+  async getKbNodeByPath(): Promise<null> { return null }
 }
 
 /** Cosine similarity between two vectors */

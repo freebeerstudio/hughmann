@@ -50,10 +50,12 @@ Domains can be marked as **isolated** (no cross-domain information leaks) or **p
 
 Choose your stack:
 
-- **Model providers** — Claude OAuth (free with Max subscription) and/or OpenRouter
-- **Data engine** — Supabase for persistent storage + vector memory, or local-only
-- **Frontends** — CLI, Telegram, or both
-- **Execution engine** — local execution
+- **Data engine** — Supabase (managed Postgres + vector search), SQLite (local, zero config), or Turso (cloud SQLite with edge replication)
+- **Execution engine** — Trigger.dev (cloud workflows), local daemon, or hybrid
+- **Frontends** — CLI, Telegram, Discord, iOS, web, iMessage
+- **Model providers** — Claude Max (free via OAuth), Claude API, OpenRouter, OpenAI
+
+If you select Supabase or Turso, the wizard offers to connect and create tables inline. API keys for selected providers (OpenRouter, Claude API, OpenAI) and frontends (Telegram) are also collected and validated during setup.
 
 ### 5. Autonomy Settings
 
@@ -84,24 +86,30 @@ After onboarding, `~/.hughmann/` contains:
 └── logs/                     # Execution logs
 ```
 
-## Add API Keys
+## API Keys
 
-Edit `~/.hughmann/.env`:
+Most API keys are collected and validated during `hughmann setup`. If you skip any or need to add them later, edit `~/.hughmann/.env`:
 
 ```bash
-# Required if not using Claude OAuth
+# Model providers (collected during setup if selected)
 OPENROUTER_API_KEY=your-openrouter-key
+ANTHROPIC_API_KEY=your-anthropic-key
+OPENAI_API_KEY=your-openai-key
 
-# Optional: persistent storage + vector memory
+# Data engines (collected during setup if selected)
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your-supabase-anon-key
+SUPABASE_KEY=your-supabase-service-role-key
+TURSO_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your-turso-auth-token
 
-# Optional: vector memory search
+# Embeddings (optional)
 EMBEDDING_API_KEY=your-embedding-api-key
 
-# Optional: Telegram bot
+# Frontends (collected during setup if selected)
 TELEGRAM_BOT_TOKEN=your-bot-token
 ```
+
+Claude Max requires no API key — it authenticates via the Claude agent SDK's OAuth flow.
 
 ## First Conversation
 

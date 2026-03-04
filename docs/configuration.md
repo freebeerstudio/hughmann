@@ -62,16 +62,22 @@ Add to `~/.hughmann/.env`. Loaded automatically at boot (won't override existing
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `OPENROUTER_API_KEY` | OpenRouter API key | If not using Claude OAuth |
+| `OPENROUTER_API_KEY` | OpenRouter API key | If using OpenRouter |
+| `ANTHROPIC_API_KEY` | Anthropic (Claude) API key | If using Claude API |
+| `OPENAI_API_KEY` | OpenAI API key | If using OpenAI |
 
-Claude OAuth (via Claude Max subscription) is the preferred provider and requires no API key — it authenticates via the Claude agent SDK.
+Claude Max (via Claude Max subscription) is the preferred provider and requires no API key — it authenticates via the Claude agent SDK. API keys for selected providers are collected and validated during `hughmann setup`.
 
-### Persistent Storage
+### Data Engines
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `SUPABASE_URL` | Supabase project URL | For vector memory / sync |
-| `SUPABASE_KEY` | Supabase anon key | For vector memory / sync |
+| `SUPABASE_URL` | Supabase project URL | For Supabase engine |
+| `SUPABASE_KEY` | Supabase service role key | For Supabase engine |
+| `TURSO_URL` | Turso database URL (`libsql://` or `https://`) | For Turso engine |
+| `TURSO_AUTH_TOKEN` | Turso auth token | For Turso engine |
+
+SQLite requires no configuration — data is stored locally at `~/.hughmann/data/hughmann.db`. Supabase and Turso credentials are collected during `hughmann setup` or via `hughmann migrate --apply`.
 
 ### Embeddings
 
@@ -91,12 +97,18 @@ Claude OAuth (via Claude Max subscription) is the preferred provider and require
 ### Example .env
 
 ```bash
-# Model provider (if not using Claude Max)
+# Model providers (if not using Claude Max)
 OPENROUTER_API_KEY=your-openrouter-key
+ANTHROPIC_API_KEY=your-anthropic-key
+OPENAI_API_KEY=your-openai-key
 
-# Persistent storage + vector memory
+# Data engine — Supabase
 SUPABASE_URL=https://myproject.supabase.co
-SUPABASE_KEY=your-supabase-anon-key
+SUPABASE_KEY=your-supabase-service-role-key
+
+# Data engine — Turso (alternative to Supabase)
+TURSO_URL=libsql://your-db.turso.io
+TURSO_AUTH_TOKEN=your-turso-auth-token
 
 # Embeddings
 EMBEDDING_API_KEY=your-embedding-api-key
@@ -269,7 +281,7 @@ src/
 ├── adapters/
 │   ├── model/                # Claude OAuth, OpenRouter
 │   ├── embeddings/           # Vector embeddings
-│   ├── data/                 # Supabase
+│   ├── data/                 # Supabase, SQLite, Turso
 │   └── frontend/             # CLI, Telegram
 ├── daemon/                   # Background daemon
 ├── scheduler/                # launchd integration

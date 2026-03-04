@@ -78,6 +78,10 @@ export async function startDaemon(): Promise<void> {
 
   // Track what's already been run today
   const executedToday = new Set<string>()
+  let lastVaultSync = Date.now() // Just synced on boot
+  let lastMailCheck = 0
+  const VAULT_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000 // 6 hours
+  const MAIL_CHECK_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes
 
   // Heartbeat loop
   const heartbeatTimer = setInterval(() => {
@@ -111,6 +115,23 @@ export async function startDaemon(): Promise<void> {
       // 3. Process queue
       await processQueue(runtime)
 
+      // Periodic mail check (7am-6pm only)
+      const hour = new Date().getHours()
+      if (hour >= 7 && hour < 18 && Date.now() - lastMailCheck > MAIL_CHECK_INTERVAL_MS) {
+        lastMailCheck = Date.now()
+        runMailCheck(runtime).catch(err => {
+          log(`Mail check error: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      }
+
+      // Periodic vault sync
+      if (Date.now() - lastVaultSync > VAULT_SYNC_INTERVAL_MS) {
+        lastVaultSync = Date.now()
+        runVaultSync(runtime).catch(err => {
+          log(`Periodic vault sync error: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      }
+
       // Reset executed set at midnight
       const now = new Date()
       if (now.getHours() === 0 && now.getMinutes() === 0) {
@@ -125,6 +146,11 @@ export async function startDaemon(): Promise<void> {
   await checkSchedule(runtime, schedule, executedToday)
   await processInbox(runtime)
   await processQueue(runtime)
+
+  // Run vault sync on daemon start (best-effort)
+  runVaultSync(runtime).catch(err => {
+    log(`Vault sync error: ${err instanceof Error ? err.message : String(err)}`)
+  })
 
   // Keep process alive
   log('Daemon is running. Polling every 60 seconds.')
@@ -396,6 +422,68 @@ function logResult(taskId: string, result: string): void {
   const entry = `## ${taskId} — ${new Date().toLocaleTimeString()}\n\n${result}\n\n---\n\n`
 
   appendFileSync(path, entry, 'utf-8')
+}
+
+async function runVaultSync(runtime: Runtime): Promise<void> {
+  try {
+    const { loadVaultConfigs, syncVault } = await import('../runtime/vault-sync.js')
+    const { createEmbeddingAdapter } = await import('../adapters/embeddings/index.js')
+
+    const configs = loadVaultConfigs()
+    if (configs.length === 0) return
+    if (!runtime.data) return
+
+    const embedAdapter = createEmbeddingAdapter()
+    if (!embedAdapter) return
+
+    for (const config of configs) {
+      log(`Vault sync starting: ${config.name}`)
+      const stats = await syncVault(config, runtime.data, embedAdapter, (msg) => log(msg))
+      log(`Vault sync done: ${config.name} — ${stats.filesSynced} files, ${stats.chunksCreated} chunks`)
+    }
+  } catch (err) {
+    log(`Vault sync failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+async function runMailCheck(runtime: Runtime): Promise<void> {
+  try {
+    const { runMailPipeline } = await import('../mail/index.js')
+    log('Mail check starting...')
+    const result = await runMailPipeline({}, (msg) => log(msg))
+    log(`Mail check done: ${result.processed} processed, ${result.filesWritten} files written, ${result.errors} errors`)
+
+    // If new files were written, trigger vault sync targeting _inbox/
+    if (result.filesWritten > 0) {
+      runInboxSync(runtime).catch(err => {
+        log(`Inbox sync error: ${err instanceof Error ? err.message : String(err)}`)
+      })
+    }
+  } catch (err) {
+    log(`Mail check failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+async function runInboxSync(runtime: Runtime): Promise<void> {
+  try {
+    const { loadVaultConfigs, syncVault } = await import('../runtime/vault-sync.js')
+    const { createEmbeddingAdapter } = await import('../adapters/embeddings/index.js')
+
+    const configs = loadVaultConfigs()
+    const omnissa = configs.find(c => c.name === 'omnissa')
+    if (!omnissa || !runtime.data) return
+
+    const embedAdapter = createEmbeddingAdapter()
+    if (!embedAdapter) return
+
+    // Sync only the _inbox folder
+    const inboxConfig = { ...omnissa, folders: ['_inbox'] }
+    log('Inbox vault sync starting...')
+    const stats = await syncVault(inboxConfig, runtime.data, embedAdapter, (msg) => log(msg))
+    log(`Inbox vault sync done: ${stats.filesSynced} files, ${stats.chunksCreated} chunks`)
+  } catch (err) {
+    log(`Inbox vault sync failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 function cleanup(): void {
