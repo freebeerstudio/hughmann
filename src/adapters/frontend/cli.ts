@@ -285,6 +285,34 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       return
     }
 
+    case '/usage': {
+      if (!runtime.usage) {
+        console.log(`  ${pc.dim('Usage tracking not available.')}`)
+        return
+      }
+      const summary = runtime.usage.getSummary()
+      console.log()
+      console.log(`  ${pc.bold('Usage')}:`)
+      console.log(`    Today:  ${pc.cyan(summary.today.calls + ' calls')}  ${pc.dim('$' + summary.today.costUsd.toFixed(4))}`)
+      console.log(`    Week:   ${pc.cyan(summary.week.calls + ' calls')}  ${pc.dim('$' + summary.week.costUsd.toFixed(4))}`)
+      console.log(`    Month:  ${pc.cyan(summary.month.calls + ' calls')}  ${pc.dim('$' + summary.month.costUsd.toFixed(4))}`)
+
+      const limits = runtime.usage.getLimits()
+      console.log()
+      console.log(`  ${pc.bold('Limits')}: ${pc.dim(`$${limits.dailyUsd}/day, $${limits.monthlyUsd}/month`)}`)
+
+      const domainEntries = Object.entries(summary.byDomain).sort((a, b) => b[1].costUsd - a[1].costUsd)
+      if (domainEntries.length > 0) {
+        console.log()
+        console.log(`  ${pc.bold('By Domain')}:`)
+        for (const [domain, data] of domainEntries) {
+          console.log(`    ${domain}: ${pc.dim('$' + data.costUsd.toFixed(4))}`)
+        }
+      }
+      console.log()
+      return
+    }
+
     case '/clear': {
       runtime.clearHistory()
       console.log(`  ${pc.green('New session started.')} ${pc.dim('(Previous session not distilled. Use /new to distill first.)')}`)
@@ -506,6 +534,7 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       console.log(`  ${pc.bold('Memory')}:`)
       console.log(`    ${pc.cyan('/distill')}          Extract learnings from current session`)
       console.log(`    ${pc.cyan('/memory')}           Show recent memories (last 3 days)`)
+      console.log(`    ${pc.cyan('/usage')}            Show usage stats and costs`)
       console.log()
       console.log(`  ${pc.bold('Domains')}:`)
       console.log(`    ${pc.cyan('/domain <name>')}    Switch to a domain context`)

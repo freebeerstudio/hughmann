@@ -9,6 +9,7 @@ import { ContextWriter } from './context-writer.js'
 import { MemoryManager } from './memory.js'
 import { SkillManager } from './skills.js'
 import type { SupabaseAdapter } from '../adapters/data/supabase.js'
+import type { UsageTracker } from './usage.js'
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000 // 2 hours
 const DISTILL_INTERVAL = 10 // every 10 turns (5 user + 5 assistant)
@@ -27,6 +28,7 @@ export class Runtime {
   mcpServers: Record<string, McpServerConfig>
   skills: SkillManager
   supabase?: SupabaseAdapter
+  usage?: UsageTracker
 
   private contextDir: string
   private turnsSinceDistill = 0
@@ -40,6 +42,7 @@ export class Runtime {
     mcpServers?: Record<string, McpServerConfig>,
     skills?: SkillManager,
     supabase?: SupabaseAdapter,
+    usage?: UsageTracker,
   ) {
     this.context = context
     this.router = router
@@ -50,6 +53,7 @@ export class Runtime {
     this.mcpServers = mcpServers ?? {}
     this.skills = skills ?? new SkillManager(contextDir.replace('/context', ''))
     this.supabase = supabase
+    this.usage = usage
   }
 
   setDomain(slug: string | null): void {
@@ -93,6 +97,18 @@ export class Runtime {
     await this.maybePeriodicDistill()
     this.syncSessionToSupabase()
 
+    // Track usage
+    if (this.usage && response.usage) {
+      this.usage.record({
+        provider: response.provider,
+        model: response.model,
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+        domain: this.activeDomain,
+        source: 'chat',
+      })
+    }
+
     return response.content
   }
 
@@ -113,6 +129,17 @@ export class Runtime {
     }, systemPrompt)) {
       if (chunk.type === 'text') {
         fullResponse += chunk.content
+      }
+      if (chunk.type === 'done' && this.usage && chunk.metadata?.costUsd) {
+        this.usage.record({
+          provider: 'claude-oauth',
+          model: 'claude-sonnet-4-6',
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: chunk.metadata.costUsd,
+          domain: this.activeDomain,
+          source: 'chat',
+        })
       }
       yield chunk
     }
@@ -155,6 +182,17 @@ export class Runtime {
     }, systemPrompt)) {
       if (chunk.type === 'text') {
         fullResponse += chunk.content
+      }
+      if (chunk.type === 'done' && this.usage && chunk.metadata?.costUsd) {
+        this.usage.record({
+          provider: 'claude-oauth',
+          model: 'claude-opus-4-6',
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: chunk.metadata.costUsd,
+          domain: this.activeDomain,
+          source: 'task',
+        })
       }
       yield chunk
     }

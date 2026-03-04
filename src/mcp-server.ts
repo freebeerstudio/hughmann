@@ -273,6 +273,18 @@ server.tool(
 )
 
 server.tool(
+  'get_usage',
+  'Get usage statistics: token counts, costs, limits by day/week/month/domain.',
+  async () => {
+    const rt = await getRuntime()
+    if (!rt.usage) {
+      return { content: [{ type: 'text', text: 'Usage tracking not initialized.' }] }
+    }
+    return { content: [{ type: 'text', text: rt.usage.formatReport() }] }
+  },
+)
+
+server.tool(
   'reload_context',
   'Reload context documents from disk. Use after editing ~/.hughmann/context/ files.',
   async () => {

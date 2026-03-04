@@ -11,6 +11,7 @@ import { loadMcpConfig } from './mcp-config.js'
 import { SkillManager } from './skills.js'
 import { SupabaseAdapter } from '../adapters/data/supabase.js'
 import { createEmbeddingAdapter } from '../adapters/embeddings/index.js'
+import { UsageTracker } from './usage.js'
 
 export interface BootResult {
   success: boolean
@@ -125,7 +126,10 @@ export async function boot(): Promise<BootResult> {
     }
   }
 
-  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers, skills, supabase)
+  // Initialize usage tracker
+  const usage = new UsageTracker(HUGHMANN_HOME)
+
+  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers, skills, supabase, usage)
 
   return { success: true, runtime, warnings, errors }
 }
