@@ -1,5 +1,6 @@
 import pc from 'picocolors'
 import { showBanner } from './banner.js'
+import { StreamMarkdownRenderer } from './util/markdown.js'
 
 const GOLD = (text: string) => `\x1b[38;2;200;140;60m${text}\x1b[0m`
 
@@ -216,6 +217,9 @@ async function runSkill(flags: CliFlags) {
     console.log()
   }
 
+  // Use markdown rendering for interactive, raw for quiet/piped
+  const md = flags.quiet ? null : new StreamMarkdownRenderer()
+
   if (skill.complexity === 'autonomous') {
     // Autonomous: opus + tools
     let hasText = false
@@ -224,7 +228,10 @@ async function runSkill(flags: CliFlags) {
       switch (chunk.type) {
         case 'tool_use':
           if (!flags.quiet) {
-            if (hasText) { process.stdout.write('\n'); hasText = false }
+            if (hasText) {
+              if (md) { const f = md.flush(); if (f) process.stdout.write(f) }
+              process.stdout.write('\n'); hasText = false
+            }
             console.log(`  ${pc.yellow('\u2699')} ${pc.dim(chunk.content)}`)
           }
           break
@@ -235,13 +242,19 @@ async function runSkill(flags: CliFlags) {
           if (!hasText && !flags.quiet) {
             process.stdout.write('\n')
           }
-          process.stdout.write(chunk.content)
+          if (md) {
+            const rendered = md.feed(chunk.content)
+            if (rendered) process.stdout.write(rendered)
+          } else {
+            process.stdout.write(chunk.content)
+          }
           hasText = true
           break
         case 'error':
           console.error(pc.red(`Error: ${chunk.content}`))
           break
         case 'done':
+          if (md) { const f = md.flush(); if (f) process.stdout.write(f) }
           if (hasText) process.stdout.write('\n')
           break
       }
@@ -250,11 +263,17 @@ async function runSkill(flags: CliFlags) {
     // Conversational/lightweight
     for await (const chunk of runtime.chatStream(prompt)) {
       if (chunk.type === 'text') {
-        process.stdout.write(chunk.content)
+        if (md) {
+          const rendered = md.feed(chunk.content)
+          if (rendered) process.stdout.write(rendered)
+        } else {
+          process.stdout.write(chunk.content)
+        }
       } else if (chunk.type === 'error') {
         console.error(pc.red(`Error: ${chunk.content}`))
       }
     }
+    if (md) { const f = md.flush(); if (f) process.stdout.write(f) }
     process.stdout.write('\n')
   }
 

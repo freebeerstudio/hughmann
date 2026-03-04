@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline'
 import pc from 'picocolors'
 import type { Runtime } from '../../runtime/runtime.js'
 import type { Skill } from '../../runtime/skills.js'
+import { StreamMarkdownRenderer } from '../../util/markdown.js'
 
 const GOLD = (text: string) => `\x1b[38;2;200;140;60m${text}\x1b[0m`
 const DIM_COPPER = (text: string) => `\x1b[38;2;120;80;30m${text}\x1b[0m`
@@ -80,16 +81,20 @@ export async function startChatLoop(runtime: Runtime, firstBoot: boolean = false
     try {
       process.stdout.write(`\n  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
 
+      const md = new StreamMarkdownRenderer()
       let hasOutput = false
       for await (const chunk of runtime.chatStream(trimmed)) {
         if (chunk.type === 'text') {
-          process.stdout.write(chunk.content)
+          const rendered = md.feed(chunk.content)
+          if (rendered) process.stdout.write(rendered)
           hasOutput = true
         } else if (chunk.type === 'error') {
           console.error(pc.red(`\n  Error: ${chunk.content}`))
         }
       }
 
+      const remaining = md.flush()
+      if (remaining) process.stdout.write(remaining)
       if (hasOutput) {
         process.stdout.write('\n')
       }
@@ -389,12 +394,14 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       try {
         let hasText = false
         let lastToolName: string | null = null
+        const md = new StreamMarkdownRenderer()
 
         for await (const chunk of runtime.doTaskStream(args)) {
           switch (chunk.type) {
             case 'tool_use': {
-              // Show tool being invoked
               if (hasText) {
+                const flushed = md.flush()
+                if (flushed) process.stdout.write(flushed)
                 process.stdout.write('\n')
                 hasText = false
               }
@@ -402,24 +409,21 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
               console.log(`  ${pc.yellow(TOOL_ICON)} ${pc.dim(chunk.content)}`)
               break
             }
-            case 'tool_progress': {
-              // Show tool progress (subtle)
-              break
-            }
+            case 'tool_progress': break
             case 'status': {
               console.log(`  ${pc.green(CHECK_ICON)} ${pc.dim(chunk.content)}`)
               break
             }
             case 'text': {
               if (!hasText && lastToolName) {
-                // Transition from tool use to text output
                 console.log()
                 process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
                 lastToolName = null
               } else if (!hasText) {
                 process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
               }
-              process.stdout.write(chunk.content)
+              const rendered = md.feed(chunk.content)
+              if (rendered) process.stdout.write(rendered)
               hasText = true
               break
             }
@@ -428,9 +432,9 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
               break
             }
             case 'done': {
-              if (hasText) {
-                process.stdout.write('\n')
-              }
+              const flushed = md.flush()
+              if (flushed) process.stdout.write(flushed)
+              if (hasText) process.stdout.write('\n')
               const turns = chunk.metadata?.turnCount
               const cost = chunk.metadata?.costUsd
               const stats: string[] = []
@@ -578,6 +582,7 @@ async function runSkill(skill: Skill, runtime: Runtime, extraArgs: string): Prom
     try {
       let hasText = false
       let lastToolName: string | null = null
+      const md = new StreamMarkdownRenderer()
 
       for await (const chunk of runtime.doTaskStream(prompt, {
         maxTurns: skill.maxTurns,
@@ -585,6 +590,8 @@ async function runSkill(skill: Skill, runtime: Runtime, extraArgs: string): Prom
         switch (chunk.type) {
           case 'tool_use': {
             if (hasText) {
+              const flushed = md.flush()
+              if (flushed) process.stdout.write(flushed)
               process.stdout.write('\n')
               hasText = false
             }
@@ -605,7 +612,8 @@ async function runSkill(skill: Skill, runtime: Runtime, extraArgs: string): Prom
             } else if (!hasText) {
               process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
             }
-            process.stdout.write(chunk.content)
+            const rendered = md.feed(chunk.content)
+            if (rendered) process.stdout.write(rendered)
             hasText = true
             break
           }
@@ -614,6 +622,8 @@ async function runSkill(skill: Skill, runtime: Runtime, extraArgs: string): Prom
             break
           }
           case 'done': {
+            const flushed = md.flush()
+            if (flushed) process.stdout.write(flushed)
             if (hasText) process.stdout.write('\n')
             const turns = chunk.metadata?.turnCount
             const cost = chunk.metadata?.costUsd
@@ -640,16 +650,20 @@ async function runSkill(skill: Skill, runtime: Runtime, extraArgs: string): Prom
     try {
       process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
 
+      const md = new StreamMarkdownRenderer()
       let hasOutput = false
       for await (const chunk of runtime.chatStream(prompt)) {
         if (chunk.type === 'text') {
-          process.stdout.write(chunk.content)
+          const rendered = md.feed(chunk.content)
+          if (rendered) process.stdout.write(rendered)
           hasOutput = true
         } else if (chunk.type === 'error') {
           console.error(pc.red(`\n  Error: ${chunk.content}`))
         }
       }
 
+      const remaining = md.flush()
+      if (remaining) process.stdout.write(remaining)
       if (hasOutput) process.stdout.write('\n')
       console.log()
     } catch (err) {
