@@ -225,13 +225,15 @@ export class Runtime {
     if (result) {
       this.memory.markDistilled(session.id)
       this.turnsSinceDistill = 0
-      // Sync memory to Supabase
+      // Sync memory to Supabase (text)
       this.supabase?.saveMemory({
         sessionId: session.id,
         domain: session.domain,
         content: result,
         date: new Date().toISOString().split('T')[0],
       }).catch(() => {})
+      // Generate and store embedding (vector)
+      this.memory.embedAndStore(result, session.id, session.domain).catch(() => {})
     }
     return result
   }
@@ -265,6 +267,14 @@ export class Runtime {
     }
 
     return prompt
+  }
+
+  /** Semantic search across memories (requires embeddings + Supabase) */
+  async searchMemory(query: string, options?: {
+    limit?: number
+    domain?: string
+  }): Promise<{ content: string; domain: string | null; similarity: number }[]> {
+    return this.memory.searchSemantic(query, options)
   }
 
   reloadContext(): { domainCount: number; docCount: number; warnings: string[] } {

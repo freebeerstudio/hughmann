@@ -10,6 +10,7 @@ import { MemoryManager } from './memory.js'
 import { loadMcpConfig } from './mcp-config.js'
 import { SkillManager } from './skills.js'
 import { SupabaseAdapter } from '../adapters/data/supabase.js'
+import { createEmbeddingAdapter } from '../adapters/embeddings/index.js'
 
 export interface BootResult {
   success: boolean
@@ -93,6 +94,13 @@ export async function boot(): Promise<BootResult> {
   const distillAdapter = adapters.find(a => a.id === 'claude-oauth') ?? adapters[0]
   memory.setModel(distillAdapter)
 
+  // Initialize embedding adapter for vector memory
+  const embeddingAdapter = createEmbeddingAdapter()
+  if (embeddingAdapter) {
+    memory.setEmbeddings(embeddingAdapter)
+    warnings.push('Embeddings available (vector memory enabled)')
+  }
+
   // Load skills
   const skills = new SkillManager(HUGHMANN_HOME)
   skills.initSkillsDir()
@@ -110,6 +118,7 @@ export async function boot(): Promise<BootResult> {
     const initResult = await supabase.init()
     if (initResult.success) {
       warnings.push('Supabase connected')
+      memory.setSupabase(supabase)
     } else {
       warnings.push(`Supabase: ${initResult.error}`)
       supabase = undefined

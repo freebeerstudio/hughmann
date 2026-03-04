@@ -199,12 +199,30 @@ server.tool(
 
 server.tool(
   'search_memory',
-  'Search recent memories and distilled knowledge from past sessions.',
-  { count: z.number().optional().describe('Number of recent memories to return (default: 5)') },
-  async ({ count }) => {
+  'Search memories. Uses semantic similarity search if available, falls back to recent memories.',
+  {
+    query: z.string().optional().describe('Search query for semantic search. If omitted, returns recent memories.'),
+    count: z.number().optional().describe('Number of results to return (default: 5)'),
+    domain: z.string().optional().describe('Filter to a specific domain'),
+  },
+  async ({ query, count, domain }) => {
     const rt = await getRuntime()
-    const memories = rt.memory.getRecentMemories(count ?? 5)
 
+    // Try semantic search first
+    if (query && rt.memory.hasVectorMemory()) {
+      const results = await rt.searchMemory(query, { limit: count ?? 5, domain })
+      if (results.length > 0) {
+        const lines = results.map(r => {
+          const sim = (r.similarity * 100).toFixed(0)
+          const dom = r.domain ? ` [${r.domain}]` : ''
+          return `[${sim}% match]${dom}\n${r.content}`
+        })
+        return { content: [{ type: 'text', text: lines.join('\n\n---\n\n') }] }
+      }
+    }
+
+    // Fall back to file-based recent memories
+    const memories = rt.memory.getRecentMemories(count ?? 5)
     if (!memories) {
       return { content: [{ type: 'text', text: 'No memories found.' }] }
     }

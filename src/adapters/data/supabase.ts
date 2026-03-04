@@ -211,6 +211,80 @@ export class SupabaseAdapter {
 
     return data ?? []
   }
+
+  // ─── Vector Memory ──────────────────────────────────────────────────────
+
+  async saveMemoryEmbedding(entry: {
+    memoryId: number
+    content: string
+    domain: string | null
+    embedding: number[]
+  }): Promise<void> {
+    if (!this.ready) return
+
+    await this.client.from('memory_embeddings').upsert({
+      memory_id: entry.memoryId,
+      content: entry.content,
+      domain: entry.domain,
+      embedding: `[${entry.embedding.join(',')}]`,
+    })
+  }
+
+  async saveMemoryWithEmbedding(entry: {
+    sessionId: string
+    domain: string | null
+    content: string
+    date: string
+    embedding: number[]
+  }): Promise<number | null> {
+    if (!this.ready) return null
+
+    // Insert memory and get its ID
+    const { data: memData } = await this.client.from('memories').insert({
+      session_id: entry.sessionId,
+      domain: entry.domain,
+      content: entry.content,
+      memory_date: entry.date,
+    }).select('id').single()
+
+    if (!memData?.id) return null
+
+    // Insert embedding
+    await this.client.from('memory_embeddings').insert({
+      memory_id: memData.id,
+      content: entry.content,
+      domain: entry.domain,
+      embedding: `[${entry.embedding.join(',')}]`,
+    })
+
+    return memData.id
+  }
+
+  /**
+   * Semantic similarity search using pgvector.
+   * Calls a Supabase RPC function that does cosine similarity.
+   */
+  async searchMemories(queryEmbedding: number[], options?: {
+    limit?: number
+    domain?: string
+    threshold?: number
+  }): Promise<{
+    content: string
+    domain: string | null
+    similarity: number
+    memory_date: string
+  }[]> {
+    if (!this.ready) return []
+
+    const { data } = await this.client.rpc('search_memories', {
+      query_embedding: `[${queryEmbedding.join(',')}]`,
+      match_count: options?.limit ?? 10,
+      match_threshold: options?.threshold ?? 0.5,
+      filter_domain: options?.domain ?? null,
+    })
+
+    return data ?? []
+  }
 }
 
 // ─── SQL Migration ──────────────────────────────────────────────────────────
@@ -273,17 +347,69 @@ CREATE TABLE IF NOT EXISTS domain_notes (
 
 CREATE INDEX IF NOT EXISTS idx_domain_notes_domain ON domain_notes (domain);
 
+-- Memory embeddings table (pgvector)
+-- Requires: CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+  id BIGSERIAL PRIMARY KEY,
+  memory_id BIGINT REFERENCES memories(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  domain TEXT,
+  embedding vector(1536),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_domain ON memory_embeddings (domain);
+
+-- HNSW index for fast similarity search
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_vector
+  ON memory_embeddings USING hnsw (embedding vector_cosine_ops);
+
+-- Semantic search function
+CREATE OR REPLACE FUNCTION search_memories(
+  query_embedding vector(1536),
+  match_count INT DEFAULT 10,
+  match_threshold FLOAT DEFAULT 0.5,
+  filter_domain TEXT DEFAULT NULL
+)
+RETURNS TABLE (
+  content TEXT,
+  domain TEXT,
+  similarity FLOAT,
+  memory_date DATE
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    me.content,
+    me.domain,
+    1 - (me.embedding <=> query_embedding) AS similarity,
+    m.memory_date
+  FROM memory_embeddings me
+  JOIN memories m ON m.id = me.memory_id
+  WHERE (filter_domain IS NULL OR me.domain = filter_domain)
+    AND 1 - (me.embedding <=> query_embedding) > match_threshold
+  ORDER BY me.embedding <=> query_embedding
+  LIMIT match_count;
+END;
+$$;
+
 -- Enable Row Level Security (optional but recommended)
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE decisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE domain_notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memory_embeddings ENABLE ROW LEVEL SECURITY;
 
 -- Allow all operations for authenticated users (adjust as needed)
 CREATE POLICY "Allow all for service key" ON sessions FOR ALL USING (true);
 CREATE POLICY "Allow all for service key" ON memories FOR ALL USING (true);
 CREATE POLICY "Allow all for service key" ON decisions FOR ALL USING (true);
 CREATE POLICY "Allow all for service key" ON domain_notes FOR ALL USING (true);
+CREATE POLICY "Allow all for service key" ON memory_embeddings FOR ALL USING (true);
 `
 
 /**

@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ModelAdapter } from '../types/adapters.js'
+import type { EmbeddingAdapter } from '../adapters/embeddings/index.js'
+import type { SupabaseAdapter } from '../adapters/data/supabase.js'
 import type { Session } from './session.js'
 
 const DISTILL_PROMPT = `You are a memory extraction system. Given a conversation between a user and their AI system, extract the key information worth remembering.
@@ -26,6 +28,8 @@ If a section has nothing, omit it entirely. Be concise. Each bullet should be on
 export class MemoryManager {
   private memoryDir: string
   private model: ModelAdapter | null = null
+  private embeddings: EmbeddingAdapter | null = null
+  private supabase: SupabaseAdapter | null = null
 
   constructor(hughmannHome: string) {
     this.memoryDir = join(hughmannHome, 'memory')
@@ -35,6 +39,16 @@ export class MemoryManager {
   /** Set the model adapter used for distillation (haiku-class) */
   setModel(adapter: ModelAdapter): void {
     this.model = adapter
+  }
+
+  /** Set the embedding adapter for vector memory */
+  setEmbeddings(adapter: EmbeddingAdapter): void {
+    this.embeddings = adapter
+  }
+
+  /** Set the Supabase adapter for persistent vector storage */
+  setSupabase(adapter: SupabaseAdapter): void {
+    this.supabase = adapter
   }
 
   /**
@@ -156,5 +170,52 @@ export class MemoryManager {
     // Keep only the last 200 entries to prevent unbounded growth
     const arr = Array.from(ledger).slice(-200)
     writeFileSync(path, JSON.stringify(arr, null, 2), 'utf-8')
+  }
+
+  // ─── Vector Memory ────────────────────────────────────────────────────
+
+  /** Check if vector memory is available (needs both embeddings + Supabase) */
+  hasVectorMemory(): boolean {
+    return !!(this.embeddings && this.supabase)
+  }
+
+  /**
+   * Store a memory with its embedding vector.
+   * Called after distillation to enable semantic search.
+   */
+  async embedAndStore(content: string, sessionId: string, domain: string | null): Promise<void> {
+    if (!this.embeddings || !this.supabase) return
+
+    try {
+      const embedding = await this.embeddings.embed(content)
+      await this.supabase.saveMemoryWithEmbedding({
+        sessionId,
+        domain,
+        content,
+        date: new Date().toISOString().split('T')[0],
+        embedding,
+      })
+    } catch {
+      // Best-effort — vector memory is an enhancement, not critical
+    }
+  }
+
+  /**
+   * Semantic search across all memories.
+   * Returns the most relevant memories for a given query.
+   */
+  async searchSemantic(query: string, options?: {
+    limit?: number
+    domain?: string
+    threshold?: number
+  }): Promise<{ content: string; domain: string | null; similarity: number }[]> {
+    if (!this.embeddings || !this.supabase) return []
+
+    try {
+      const queryEmbedding = await this.embeddings.embed(query)
+      return await this.supabase.searchMemories(queryEmbedding, options)
+    } catch {
+      return []
+    }
   }
 }
