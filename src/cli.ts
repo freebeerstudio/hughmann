@@ -96,6 +96,11 @@ switch (flags.command) {
     break
   }
 
+  case 'schedule': {
+    await manageSchedule(flags)
+    break
+  }
+
   case 'status': {
     await runBuiltinSkill('status', flags)
     break
@@ -345,6 +350,100 @@ async function listDomains() {
   console.log()
 }
 
+/**
+ * `hughmann schedule [install|list|remove]` — Manage scheduled skills via launchd
+ */
+async function manageSchedule(flags: CliFlags) {
+  const { installSchedule, removeSchedule, removeAllSchedules, listSchedules, DEFAULT_SCHEDULES } = await import('./scheduler/launchd.js')
+
+  const subcommand = flags.args[0] ?? 'list'
+  const WEEKDAYS = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+  switch (subcommand) {
+    case 'install': {
+      const skillId = flags.args[1]
+
+      if (skillId) {
+        // Install a specific skill schedule
+        const defaults = DEFAULT_SCHEDULES.find(d => d.skillId === skillId)
+        if (!defaults) {
+          console.error(`  ${pc.red('No default schedule for')} ${skillId}`)
+          console.error(`  ${pc.dim('Available: ' + DEFAULT_SCHEDULES.map(d => d.skillId).join(', '))}`)
+          process.exit(1)
+        }
+        const result = installSchedule(defaults.skillId, defaults.hour, defaults.minute, defaults.weekday)
+        if (result.success) {
+          console.log(`  ${pc.green('\u2713')} Installed: ${defaults.description}`)
+          console.log(`  ${pc.dim(result.path)}`)
+        } else {
+          console.error(`  ${pc.red('\u2717')} Failed: ${result.error}`)
+        }
+      } else {
+        // Install all default schedules
+        console.log()
+        for (const sched of DEFAULT_SCHEDULES) {
+          const result = installSchedule(sched.skillId, sched.hour, sched.minute, sched.weekday)
+          if (result.success) {
+            console.log(`  ${pc.green('\u2713')} ${sched.description}`)
+          } else {
+            console.log(`  ${pc.red('\u2717')} ${sched.skillId}: ${result.error}`)
+          }
+        }
+        console.log()
+        console.log(`  ${pc.dim('Logs: ~/.hughmann/logs/')}`)
+        console.log(`  ${pc.dim('Manage: hughmann schedule list | hughmann schedule remove')}`)
+        console.log()
+      }
+      break
+    }
+
+    case 'list': {
+      const schedules = listSchedules()
+      if (schedules.length === 0) {
+        console.log(`  ${pc.dim('No schedules installed.')}`)
+        console.log(`  ${pc.dim('Run "hughmann schedule install" to set up defaults.')}`)
+        return
+      }
+      console.log()
+      for (const s of schedules) {
+        const time = `${s.hour.toString().padStart(2, '0')}:${s.minute.toString().padStart(2, '0')}`
+        const day = s.weekday ? ` ${WEEKDAYS[s.weekday]}` : ' daily'
+        const status = s.loaded ? pc.green('active') : pc.yellow('inactive')
+        console.log(`  ${pc.bold(s.skillId)}${' '.repeat(Math.max(1, 14 - s.skillId.length))}${time}${day}  ${status}`)
+      }
+      console.log()
+      break
+    }
+
+    case 'remove': {
+      const skillId = flags.args[1]
+      if (skillId === 'all' || !skillId) {
+        const count = removeAllSchedules()
+        console.log(`  ${pc.green('\u2713')} Removed ${count} schedule${count !== 1 ? 's' : ''}`)
+      } else {
+        const removed = removeSchedule(skillId)
+        if (removed) {
+          console.log(`  ${pc.green('\u2713')} Removed schedule for ${skillId}`)
+        } else {
+          console.log(`  ${pc.dim('No schedule found for')} ${skillId}`)
+        }
+      }
+      break
+    }
+
+    default: {
+      console.log(`  ${pc.bold('Usage')}: hughmann schedule [install|list|remove]`)
+      console.log()
+      console.log(`    ${pc.cyan('install')}           Install all default schedules (morning, closeout, review)`)
+      console.log(`    ${pc.cyan('install <skill>')}   Install schedule for a specific skill`)
+      console.log(`    ${pc.cyan('list')}              Show installed schedules`)
+      console.log(`    ${pc.cyan('remove')}            Remove all schedules`)
+      console.log(`    ${pc.cyan('remove <skill>')}    Remove a specific schedule`)
+      console.log()
+    }
+  }
+}
+
 // ─── Usage ──────────────────────────────────────────────────────────────────
 
 function showUsage() {
@@ -358,6 +457,7 @@ function showUsage() {
   console.log(`    ${pc.cyan('<skill>')}           Shorthand for run ${pc.dim('(e.g. hughmann morning)')}`)
   console.log(`    ${pc.cyan('skills')}            List available skills`)
   console.log(`    ${pc.cyan('domains')}           List configured domains`)
+  console.log(`    ${pc.cyan('schedule')}          Manage scheduled skills ${pc.dim('(launchd)')}`)
   console.log()
   console.log(`  ${pc.bold('Flags')}:`)
   console.log(`    ${pc.cyan('-c, --continue')}    Resume the most recent session`)
@@ -367,10 +467,11 @@ function showUsage() {
   console.log(`    ${pc.cyan('-h, --help')}        Show this help`)
   console.log()
   console.log(`  ${pc.bold('Examples')}:`)
-  console.log(`    ${pc.dim('hughmann')}                    ${pc.dim('# Start chatting')}`)
-  console.log(`    ${pc.dim('hughmann morning')}             ${pc.dim('# Run morning dashboard')}`)
-  console.log(`    ${pc.dim('hughmann run review')}          ${pc.dim('# Run weekly review')}`)
-  console.log(`    ${pc.dim('hughmann status -q')}           ${pc.dim('# Quick status (quiet mode)')}`)
-  console.log(`    ${pc.dim('hughmann chat -d omnissa')}     ${pc.dim('# Chat in Omnissa domain')}`)
+  console.log(`    ${pc.dim('hughmann')}                       ${pc.dim('# Start chatting')}`)
+  console.log(`    ${pc.dim('hughmann morning')}                ${pc.dim('# Run morning dashboard')}`)
+  console.log(`    ${pc.dim('hughmann run review')}             ${pc.dim('# Run weekly review')}`)
+  console.log(`    ${pc.dim('hughmann status -q')}              ${pc.dim('# Quick status (quiet mode)')}`)
+  console.log(`    ${pc.dim('hughmann chat -d omnissa')}        ${pc.dim('# Chat in Omnissa domain')}`)
+  console.log(`    ${pc.dim('hughmann schedule install')}       ${pc.dim('# Auto-schedule daily routines')}`)
   console.log()
 }
