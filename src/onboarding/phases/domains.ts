@@ -12,8 +12,8 @@ const DOMAIN_TYPES = [
   { value: 'community', label: 'Community / Social', hint: 'Volunteering, mentoring, networking' },
 ]
 
-async function collectOneDomain(systemName: string, domainNumber: number): Promise<LifeDomain | symbol | null> {
-  if (domainNumber > 1) {
+async function collectOneDomain(systemName: string, domainNumber: number, existing?: LifeDomain): Promise<LifeDomain | symbol | null> {
+  if (!existing && domainNumber > 1) {
     const addMore = await p.confirm({
       message: 'Add another domain?',
       initialValue: domainNumber <= 3,
@@ -22,13 +22,18 @@ async function collectOneDomain(systemName: string, domainNumber: number): Promi
     if (!addMore) return null
   }
 
-  p.log.step(pc.bold(`Domain ${domainNumber}`))
+  if (existing) {
+    p.log.step(pc.bold(`Editing: ${existing.name}`))
+  } else {
+    p.log.step(pc.bold(`Domain ${domainNumber}`))
+  }
 
   const name = await p.text({
     message: 'What do you call this domain?',
     placeholder: domainNumber === 1
       ? 'e.g., "Work - Acme Corp" or "My Business - Studio Name"'
       : 'e.g., "Personal" or "Side Project - App Name"',
+    defaultValue: existing?.name,
     validate: (v) => {
       if (!v?.trim()) return 'Give this domain a name'
     },
@@ -37,6 +42,7 @@ async function collectOneDomain(systemName: string, domainNumber: number): Promi
 
   const type = await p.select({
     message: `What type of domain is "${String(name)}"?`,
+    initialValue: existing?.type,
     options: DOMAIN_TYPES,
   })
   if (p.isCancel(type)) return type
@@ -44,6 +50,7 @@ async function collectOneDomain(systemName: string, domainNumber: number): Promi
   const description = await p.text({
     message: 'Describe this domain in a sentence or two.',
     placeholder: 'What is it? What does it involve?',
+    defaultValue: existing?.description,
     validate: (v) => {
       if (!v?.trim()) return 'A brief description helps the system understand context'
     },
@@ -53,6 +60,7 @@ async function collectOneDomain(systemName: string, domainNumber: number): Promi
   const primaryGoal = await p.text({
     message: `What's your primary goal in "${String(name)}" right now?`,
     placeholder: 'The one thing that matters most in this area',
+    defaultValue: existing?.primaryGoal,
     validate: (v) => {
       if (!v?.trim()) return 'Even a rough goal helps the system prioritize'
     },
@@ -64,16 +72,76 @@ async function collectOneDomain(systemName: string, domainNumber: number): Promi
     type: String(type),
     description: String(description),
     primaryGoal: String(primaryGoal),
-    quarterlyGoals: '',
-    activeProjects: '',
-    tools: '',
-    biggestChallenge: '',
+    quarterlyGoals: existing?.quarterlyGoals ?? '',
+    activeProjects: existing?.activeProjects ?? '',
+    tools: existing?.tools ?? '',
+    biggestChallenge: existing?.biggestChallenge ?? '',
   }
 }
 
-export async function collectDomains(systemName: string): Promise<LifeDomain[] | symbol> {
+export async function collectDomains(systemName: string, existing?: LifeDomain[]): Promise<LifeDomain[] | symbol> {
+  if (existing && existing.length > 0) {
+    // Editing mode — show existing domains, allow edit/add/remove
+    p.note(
+      `You have ${existing.length} domain${existing.length > 1 ? 's' : ''} configured.\n` +
+      `You can edit existing ones, add new ones, or remove any.`,
+      'Edit Life Domains'
+    )
+
+    const domains: LifeDomain[] = []
+
+    for (const domain of existing) {
+      const action = await p.select({
+        message: `${domain.name} (${domain.type})`,
+        options: [
+          { value: 'keep', label: 'Keep as-is', hint: domain.primaryGoal.slice(0, 50) },
+          { value: 'edit', label: 'Edit', hint: 'Update this domain' },
+          { value: 'remove', label: 'Remove', hint: 'Delete this domain' },
+        ],
+      })
+      if (p.isCancel(action)) return action
+
+      if (String(action) === 'keep') {
+        domains.push(domain)
+      } else if (String(action) === 'edit') {
+        const edited = await collectOneDomain(systemName, domains.length + 1, domain)
+        if (p.isCancel(edited)) return edited as symbol
+        if (edited) domains.push(edited)
+      }
+      // 'remove' — just don't add it
+    }
+
+    // Offer to add more
+    let domainNumber = domains.length + 1
+    while (true) {
+      const addMore = await p.confirm({
+        message: 'Add another domain?',
+        initialValue: false,
+      })
+      if (p.isCancel(addMore)) return addMore
+      if (!addMore) break
+
+      const result = await collectOneDomain(systemName, domainNumber)
+      if (p.isCancel(result)) return result as symbol
+      if (result) {
+        domains.push(result)
+        domainNumber++
+      }
+    }
+
+    if (domains.length === 0) {
+      p.log.warn('You need at least one domain.')
+      const result = await collectOneDomain(systemName, 1)
+      if (p.isCancel(result)) return result as symbol
+      if (result) domains.push(result)
+    }
+
+    return domains
+  }
+
+  // First time — guided setup
   p.note(
-    `Now let's map the areas of your life that ${systemName} will manage.\n\n` +
+    `Map the areas of your life that ${systemName} will manage.\n\n` +
     `Domains are the big categories: your job, your business, your health,\n` +
     `your side projects. Each gets its own context, goals, and priorities.\n\n` +
     `Most people have 2-5 domains. You can always add more later.`,
@@ -107,6 +175,17 @@ export async function collectDomains(systemName: string): Promise<LifeDomain[] |
 }
 
 export async function deepDiveDomains(systemName: string, domains: LifeDomain[]): Promise<LifeDomain[] | symbol> {
+  // Check if any domains need deep dive (missing quarterly goals)
+  const needsDeepDive = domains.some(d => !d.quarterlyGoals)
+  if (!needsDeepDive) {
+    const goDeeper = await p.confirm({
+      message: 'All domains have detail already. Want to review and update the deep-dive info?',
+      initialValue: false,
+    })
+    if (p.isCancel(goDeeper)) return goDeeper
+    if (!goDeeper) return domains
+  }
+
   p.note(
     `Let's go deeper on each domain. This is where ${systemName}\n` +
     `builds real understanding of your world.\n\n` +
@@ -121,6 +200,7 @@ export async function deepDiveDomains(systemName: string, domains: LifeDomain[])
     const quarterlyGoals = await p.text({
       message: `What are your top goals for "${domain.name}" this quarter?`,
       placeholder: 'List 2-3 goals, one per line. These become your guiding objectives.',
+      defaultValue: domain.quarterlyGoals || undefined,
       validate: (v) => {
         if (!v?.trim()) return 'Even rough goals help. What are you working toward?'
       },
@@ -131,6 +211,7 @@ export async function deepDiveDomains(systemName: string, domains: LifeDomain[])
     const activeProjects = await p.text({
       message: `What projects are currently active in "${domain.name}"?`,
       placeholder: 'List each project. Include status if you know it (planning, building, launching, maintaining).',
+      defaultValue: domain.activeProjects || undefined,
     })
     if (p.isCancel(activeProjects)) return activeProjects
     domain.activeProjects = String(activeProjects)
@@ -138,6 +219,7 @@ export async function deepDiveDomains(systemName: string, domains: LifeDomain[])
     const tools = await p.text({
       message: `What tools, systems, or platforms do you use for "${domain.name}"?`,
       placeholder: 'e.g., "Slack, Salesforce, Obsidian, Figma, GitHub"',
+      defaultValue: domain.tools || undefined,
     })
     if (p.isCancel(tools)) return tools
     domain.tools = String(tools)
@@ -145,6 +227,7 @@ export async function deepDiveDomains(systemName: string, domains: LifeDomain[])
     const challenge = await p.text({
       message: `What's the biggest challenge or blocker in "${domain.name}" right now?`,
       placeholder: 'What keeps you stuck? What would you fix if you had a magic wand?',
+      defaultValue: domain.biggestChallenge || undefined,
     })
     if (p.isCancel(challenge)) return challenge
     domain.biggestChallenge = String(challenge)

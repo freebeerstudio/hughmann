@@ -1,17 +1,17 @@
 import * as p from '@clack/prompts'
 import type { InfrastructureChoices } from '../types.js'
 
-export async function collectInfrastructure(systemName: string): Promise<InfrastructureChoices | symbol> {
+export async function collectInfrastructure(systemName: string, existing?: InfrastructureChoices): Promise<InfrastructureChoices | symbol> {
   p.note(
-    `Now for the technical foundation.\n` +
+    `The technical foundation.\n` +
     `These choices determine where ${systemName} stores data, runs tasks,\n` +
-    `and how you interact with it. All options work well.\n` +
-    `Pick what fits your setup.`,
-    'Infrastructure'
+    `and how you interact with it.`,
+    existing ? 'Edit Infrastructure' : 'Infrastructure'
   )
 
   const dataEngine = await p.select({
     message: 'Where should your data live?',
+    initialValue: existing?.dataEngine,
     options: [
       {
         value: 'supabase',
@@ -34,6 +34,7 @@ export async function collectInfrastructure(systemName: string): Promise<Infrast
 
   const executionEngine = await p.select({
     message: `How should ${systemName} execute tasks and workflows?`,
+    initialValue: existing?.executionEngine,
     options: [
       {
         value: 'trigger-dev',
@@ -56,6 +57,7 @@ export async function collectInfrastructure(systemName: string): Promise<Infrast
 
   const frontends = await p.multiselect({
     message: `How do you want to interact with ${systemName}?`,
+    initialValues: existing?.frontends,
     options: [
       { value: 'cli', label: 'Terminal / CLI', hint: 'Direct terminal access. Always available.' },
       { value: 'telegram', label: 'Telegram', hint: 'Message from your phone. Quick and portable.' },
@@ -70,6 +72,7 @@ export async function collectInfrastructure(systemName: string): Promise<Infrast
 
   const modelProviders = await p.multiselect({
     message: 'What AI model access do you have?',
+    initialValues: existing?.modelProviders,
     options: [
       {
         value: 'claude-max',

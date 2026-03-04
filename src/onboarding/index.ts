@@ -6,81 +6,195 @@ import { collectDomains, deepDiveDomains } from './phases/domains.js'
 import { collectInfrastructure } from './phases/infrastructure.js'
 import { collectAutonomy } from './phases/autonomy.js'
 import { reviewAndConfirm } from './phases/review.js'
+import { loadConfig, saveConfig, isComplete, completedCount, toOnboardingResult, type HughmannConfig } from '../config.js'
 import type { OnboardingResult } from './types.js'
 
-function handleCancel(): never {
-  p.cancel('Setup cancelled. Run again anytime.')
-  process.exit(0)
+function sectionStatus(configured: boolean, label: string, summary?: string): { value: string; label: string; hint?: string } {
+  if (configured) {
+    return {
+      value: label,
+      label: `${pc.green('✓')} ${label}`,
+      hint: summary ? `${summary}  ${pc.dim('[Edit]')}` : pc.dim('[Edit]'),
+    }
+  }
+  return {
+    value: label,
+    label: `${pc.yellow('○')} ${label}`,
+    hint: pc.yellow('Setup →'),
+  }
 }
 
-export async function runOnboarding(): Promise<OnboardingResult> {
-  p.intro(pc.bold('Welcome to HughMann'))
+function systemSummary(config: HughmannConfig): string | undefined {
+  if (!config.system) return undefined
+  return `${config.system.name} — ${config.system.personality}`
+}
 
-  console.log()
-  console.log('  HughMann is a personal AI operating system that manages')
-  console.log('  your entire life across every domain: work, business,')
-  console.log('  health, projects, everything.')
-  console.log()
-  console.log('  It runs autonomously, understands your goals, and grows')
-  console.log('  its own capabilities over time. You steer. It executes.')
-  console.log()
-  console.log('  This setup builds the foundation. Every question shapes')
-  console.log('  the context documents that define who your AI is, who')
-  console.log('  you are, and what you\'re building together.')
-  console.log()
-  console.log(`  ${pc.dim('Takes about 10-15 minutes. Worth every second.')}`)
-  console.log()
+function userSummary(config: HughmannConfig): string | undefined {
+  if (!config.user) return undefined
+  return config.user.name
+}
 
-  const ready = await p.confirm({
-    message: 'Ready to begin?',
-    initialValue: true,
-  })
-  if (p.isCancel(ready) || !ready) handleCancel()
+function domainsSummary(config: HughmannConfig): string | undefined {
+  if (!config.domains) return undefined
+  return `${config.domains.length} domain${config.domains.length !== 1 ? 's' : ''}: ${config.domains.map(d => d.name).join(', ')}`
+}
 
-  // Phase 1: System Identity
-  const system = await collectSystemIdentity()
-  if (p.isCancel(system)) handleCancel()
+function infraSummary(config: HughmannConfig): string | undefined {
+  if (!config.infrastructure) return undefined
+  return `${config.infrastructure.dataEngine}, ${config.infrastructure.executionEngine}`
+}
 
-  const systemName = (system as Exclude<typeof system, symbol>).name
+function autonomySummary(config: HughmannConfig): string | undefined {
+  if (!config.autonomy) return undefined
+  return config.autonomy.level
+}
 
-  // Phase 2: User Identity
-  const user = await collectUserIdentity(systemName)
-  if (p.isCancel(user)) handleCancel()
+function getSystemName(config: HughmannConfig): string {
+  return config.system?.name ?? 'your AI'
+}
 
-  // Phase 3: Life Domains (high level)
-  const domainsResult = await collectDomains(systemName)
-  if (p.isCancel(domainsResult)) handleCancel()
+export async function runOnboarding(): Promise<OnboardingResult | null> {
+  let config = loadConfig()
+  const isFirstRun = completedCount(config) === 0
 
-  // Phase 4: Domain Deep Dive
-  const deepDomains = await deepDiveDomains(
-    systemName,
-    domainsResult as Exclude<typeof domainsResult, symbol>
-  )
-  if (p.isCancel(deepDomains)) handleCancel()
+  p.intro(pc.bold('HughMann Setup'))
 
-  // Phase 5: Infrastructure
-  const infrastructure = await collectInfrastructure(systemName)
-  if (p.isCancel(infrastructure)) handleCancel()
-
-  // Phase 6: Autonomy
-  const autonomy = await collectAutonomy(systemName)
-  if (p.isCancel(autonomy)) handleCancel()
-
-  // Build result
-  const result: OnboardingResult = {
-    system: system as Exclude<typeof system, symbol>,
-    user: user as Exclude<typeof user, symbol>,
-    domains: deepDomains as Exclude<typeof deepDomains, symbol>,
-    infrastructure: infrastructure as Exclude<typeof infrastructure, symbol>,
-    autonomy: autonomy as Exclude<typeof autonomy, symbol>,
+  if (isFirstRun) {
+    console.log()
+    console.log('  HughMann is a personal AI operating system that manages')
+    console.log('  your entire life across every domain: work, business,')
+    console.log('  health, projects, everything.')
+    console.log()
+    console.log('  It runs autonomously, understands your goals, and grows')
+    console.log('  its own capabilities over time. You steer. It executes.')
+    console.log()
+    console.log('  This setup builds the foundation. Configure each section')
+    console.log('  below. You can do them in any order, come back anytime,')
+    console.log('  and edit anything after the fact.')
+    console.log()
+    console.log(`  ${pc.dim('Complete all 5 sections to generate your context documents.')}`)
+    console.log()
   }
 
-  // Phase 7: Review
-  const confirmed = await reviewAndConfirm(result)
-  if (p.isCancel(confirmed) || !confirmed) {
-    p.log.warn('Let\'s try again. Running setup from the top...')
-    return runOnboarding()
-  }
+  // Main menu loop
+  while (true) {
+    const done = completedCount(config)
+    const total = 5
 
-  return result
+    const menuMessage = isComplete(config)
+      ? `All sections configured. Edit anything or generate your documents.`
+      : `${done}/${total} sections complete. Pick a section to configure.`
+
+    const options = [
+      sectionStatus(!!config.system, 'System Identity', systemSummary(config)),
+      sectionStatus(!!config.user, 'Your Identity', userSummary(config)),
+      sectionStatus(!!config.domains, 'Life Domains', domainsSummary(config)),
+      sectionStatus(!!config.infrastructure, 'Infrastructure', infraSummary(config)),
+      sectionStatus(!!config.autonomy, 'Autonomy', autonomySummary(config)),
+    ]
+
+    // Add separator and action options
+    if (isComplete(config)) {
+      options.push({
+        value: '_generate',
+        label: `${pc.green(pc.bold('▶ Generate Context Documents'))}`,
+        hint: 'Build your soul.md, owner.md, master-plan.md, and more',
+      })
+    }
+
+    options.push({
+      value: '_exit',
+      label: pc.dim('Exit'),
+      hint: !isComplete(config) ? pc.yellow(`${total - done} section${total - done !== 1 ? 's' : ''} remaining`) : undefined,
+    })
+
+    const choice = await p.select({
+      message: menuMessage,
+      options,
+    })
+
+    if (p.isCancel(choice)) {
+      return handleExit(config)
+    }
+
+    const section = String(choice)
+
+    // Handle actions
+    if (section === '_generate') {
+      const result = toOnboardingResult(config)
+      const confirmed = await reviewAndConfirm(result)
+      if (p.isCancel(confirmed)) continue
+      if (confirmed) return result
+      continue
+    }
+
+    if (section === '_exit') {
+      return handleExit(config)
+    }
+
+    // Handle section selection
+    const systemName = getSystemName(config)
+
+    if (section === 'System Identity') {
+      const result = await collectSystemIdentity(config.system ?? undefined)
+      if (!p.isCancel(result)) {
+        config.system = result as Exclude<typeof result, symbol>
+        saveConfig(config)
+        p.log.success('System Identity saved.')
+      }
+    }
+
+    if (section === 'Your Identity') {
+      const result = await collectUserIdentity(systemName, config.user ?? undefined)
+      if (!p.isCancel(result)) {
+        config.user = result as Exclude<typeof result, symbol>
+        saveConfig(config)
+        p.log.success('Your Identity saved.')
+      }
+    }
+
+    if (section === 'Life Domains') {
+      const domainsResult = await collectDomains(systemName, config.domains ?? undefined)
+      if (!p.isCancel(domainsResult)) {
+        const domains = domainsResult as Exclude<typeof domainsResult, symbol>
+        // Deep dive
+        const deepResult = await deepDiveDomains(systemName, domains)
+        if (!p.isCancel(deepResult)) {
+          config.domains = deepResult as Exclude<typeof deepResult, symbol>
+          saveConfig(config)
+          p.log.success(`${config.domains.length} domain${config.domains.length !== 1 ? 's' : ''} saved.`)
+        }
+      }
+    }
+
+    if (section === 'Infrastructure') {
+      const result = await collectInfrastructure(systemName, config.infrastructure ?? undefined)
+      if (!p.isCancel(result)) {
+        config.infrastructure = result as Exclude<typeof result, symbol>
+        saveConfig(config)
+        p.log.success('Infrastructure saved.')
+      }
+    }
+
+    if (section === 'Autonomy') {
+      const result = await collectAutonomy(systemName, config.autonomy ?? undefined)
+      if (!p.isCancel(result)) {
+        config.autonomy = result as Exclude<typeof result, symbol>
+        saveConfig(config)
+        p.log.success('Autonomy settings saved.')
+      }
+    }
+  }
+}
+
+async function handleExit(config: HughmannConfig): Promise<null> {
+  if (!isComplete(config)) {
+    const done = completedCount(config)
+    p.log.warn(
+      `${5 - done} section${5 - done !== 1 ? 's' : ''} still need configuration.\n` +
+      `  Run ${pc.cyan('npm run dev')} anytime to pick up where you left off.`
+    )
+  }
+  p.outro(pc.dim('See you next time.'))
+  return null
 }

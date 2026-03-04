@@ -19,17 +19,18 @@ const TIMEZONES = [
   { value: 'other', label: 'Other...', hint: 'Enter your IANA timezone manually' },
 ]
 
-export async function collectUserIdentity(systemName: string): Promise<UserIdentity | symbol> {
+export async function collectUserIdentity(systemName: string, existing?: UserIdentity): Promise<UserIdentity | symbol> {
   p.note(
-    `Now let's build a picture of who you are.\n` +
+    `Build a picture of who you are.\n` +
     `This helps ${systemName} understand your world, your work style,\n` +
     `and how to best support you. Be as honest and specific as you can.`,
-    'Your Identity'
+    existing ? 'Edit Your Identity' : 'Your Identity'
   )
 
   const name = await p.text({
     message: "What's your name?",
     placeholder: 'First name or whatever you go by',
+    defaultValue: existing?.name,
     validate: (v) => {
       if (!v?.trim()) return 'A name is required'
     },
@@ -39,6 +40,7 @@ export async function collectUserIdentity(systemName: string): Promise<UserIdent
   const description = await p.text({
     message: `Tell ${systemName} about yourself. What do you do? What drives you? What matters most?`,
     placeholder: 'e.g., "Sales engineer by day, building a web design business on the side. I value deep work, clear systems, and helping people solve real problems."',
+    defaultValue: existing?.description,
     validate: (v) => {
       if (!v?.trim()) return 'This is important for building context'
       if (v.trim().length < 20) return 'Give a bit more detail so the system really understands you'
@@ -46,8 +48,13 @@ export async function collectUserIdentity(systemName: string): Promise<UserIdent
   })
   if (p.isCancel(description)) return description
 
+  // Determine initial timezone value for the select
+  const existingTzInList = TIMEZONES.some(tz => tz.value === existing?.timezone)
+  const tzInitial = existing ? (existingTzInList ? existing.timezone : 'other') : undefined
+
   const tz = await p.select({
     message: "What's your timezone?",
+    initialValue: tzInitial,
     options: TIMEZONES,
   })
   if (p.isCancel(tz)) return tz
@@ -57,6 +64,7 @@ export async function collectUserIdentity(systemName: string): Promise<UserIdent
     const custom = await p.text({
       message: 'Enter your IANA timezone (e.g., Asia/Singapore):',
       placeholder: 'Continent/City',
+      defaultValue: existingTzInList ? undefined : existing?.timezone,
       validate: (v) => {
         if (!v?.includes('/')) return 'Use IANA format: Continent/City'
       },
@@ -67,6 +75,7 @@ export async function collectUserIdentity(systemName: string): Promise<UserIdent
 
   const peakHours = await p.select({
     message: 'When do you do your best, most focused work?',
+    initialValue: existing?.peakHours,
     options: [
       { value: 'early-morning', label: 'Early morning (5am-8am)', hint: 'Before the world wakes up' },
       { value: 'morning', label: 'Morning (8am-12pm)', hint: 'Fresh mind, clear thinking' },
@@ -79,6 +88,7 @@ export async function collectUserIdentity(systemName: string): Promise<UserIdent
 
   const communicationStyle = await p.select({
     message: 'How do you prefer to receive information?',
+    initialValue: existing?.communicationStyle,
     options: [
       { value: 'bullets', label: 'Bullet points & data', hint: 'Quick to scan, numbers over narratives' },
       { value: 'narrative', label: 'Narrative & context', hint: 'Full picture with the "why" behind things' },

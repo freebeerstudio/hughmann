@@ -1,17 +1,18 @@
 import * as p from '@clack/prompts'
 import type { AutonomySettings } from '../types.js'
 
-export async function collectAutonomy(systemName: string): Promise<AutonomySettings | symbol> {
+export async function collectAutonomy(systemName: string, existing?: AutonomySettings): Promise<AutonomySettings | symbol> {
   p.note(
-    `Last section. This defines how independently ${systemName} operates.\n\n` +
+    `Define how independently ${systemName} operates.\n\n` +
     `There's a spectrum from "ask me before everything" to\n` +
     `"handle it and tell me what you did." Most people start\n` +
     `in the middle and dial up autonomy as trust builds.`,
-    'Autonomy & Communication'
+    existing ? 'Edit Autonomy' : 'Autonomy & Communication'
   )
 
   const level = await p.select({
     message: `How much autonomy should ${systemName} have?`,
+    initialValue: existing?.level,
     options: [
       {
         value: 'conservative',
@@ -39,6 +40,7 @@ export async function collectAutonomy(systemName: string): Promise<AutonomySetti
 
   const channels = await p.multiselect({
     message: `How should ${systemName} keep you informed?`,
+    initialValues: existing?.communicationChannels,
     options: [
       { value: 'push', label: 'Push notifications', hint: 'For important items and completed tasks' },
       { value: 'morning', label: 'Daily morning briefing', hint: 'Summary of the day ahead + priorities' },
@@ -52,6 +54,7 @@ export async function collectAutonomy(systemName: string): Promise<AutonomySetti
 
   const activeHours = await p.select({
     message: `When should ${systemName} be active?`,
+    initialValue: existing?.activeHours,
     options: [
       { value: '24/7', label: 'Always on', hint: 'Runs around the clock. Best for full autonomy.' },
       { value: 'work-hours', label: 'Work hours only', hint: 'Active during your typical work hours.' },
@@ -61,11 +64,12 @@ export async function collectAutonomy(systemName: string): Promise<AutonomySetti
   })
   if (p.isCancel(activeHours)) return activeHours
 
-  let customSchedule: string | undefined
+  let customSchedule: string | undefined = existing?.customSchedule
   if (String(activeHours) === 'custom') {
     const schedule = await p.text({
       message: 'Define your schedule:',
       placeholder: 'e.g., "7am-10pm weekdays, 9am-6pm weekends" or "6am-11pm daily"',
+      defaultValue: existing?.customSchedule,
     })
     if (p.isCancel(schedule)) return schedule
     customSchedule = String(schedule)

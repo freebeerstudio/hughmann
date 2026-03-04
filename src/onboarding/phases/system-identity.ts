@@ -1,19 +1,18 @@
 import * as p from '@clack/prompts'
-import pc from 'picocolors'
 import type { SystemIdentity } from '../types.js'
 
-export async function collectSystemIdentity(): Promise<SystemIdentity | symbol> {
+export async function collectSystemIdentity(existing?: SystemIdentity): Promise<SystemIdentity | symbol> {
   p.note(
-    `First, let's define who your AI is.\n` +
+    `Define who your AI is.\n` +
     `This shapes how it thinks, communicates, and presents itself.\n` +
     `The identity you create here becomes its soul.`,
-    'System Identity'
+    existing ? 'Edit System Identity' : 'System Identity'
   )
 
   const name = await p.text({
     message: 'What would you like to name your AI assistant?',
     placeholder: 'Hugh',
-    defaultValue: 'Hugh',
+    defaultValue: existing?.name ?? 'Hugh',
     validate: (v) => {
       if (!v?.trim()) return 'A name is required'
     },
@@ -22,6 +21,7 @@ export async function collectSystemIdentity(): Promise<SystemIdentity | symbol> 
 
   const personality = await p.select({
     message: `What personality should ${String(name)} have?`,
+    initialValue: existing?.personality,
     options: [
       {
         value: 'direct',
@@ -49,6 +49,7 @@ export async function collectSystemIdentity(): Promise<SystemIdentity | symbol> 
 
   const rules = await p.multiselect({
     message: `What communication rules should ${String(name)} always follow?`,
+    initialValues: existing?.communicationRules,
     options: [
       { value: 'no-cliches', label: 'No AI cliches', hint: 'Never say "Certainly!", "Great question!", "As an AI"' },
       { value: 'no-sycophancy', label: 'No sycophancy', hint: 'No empty praise or over-agreement' },
@@ -62,10 +63,10 @@ export async function collectSystemIdentity(): Promise<SystemIdentity | symbol> 
   })
   if (p.isCancel(rules)) return rules
 
-  let customRules: string | undefined
+  let customRules: string | undefined = existing?.customRules
   const wantsCustom = await p.confirm({
     message: 'Any additional rules or personality traits to add?',
-    initialValue: false,
+    initialValue: !!existing?.customRules,
   })
   if (p.isCancel(wantsCustom)) return wantsCustom
 
@@ -73,9 +74,12 @@ export async function collectSystemIdentity(): Promise<SystemIdentity | symbol> 
     const custom = await p.text({
       message: `Describe any other rules or traits for ${String(name)}:`,
       placeholder: 'e.g., "Always use bullet points for lists" or "Be slightly sarcastic"',
+      defaultValue: existing?.customRules,
     })
     if (p.isCancel(custom)) return custom
     customRules = String(custom)
+  } else {
+    customRules = undefined
   }
 
   return {
