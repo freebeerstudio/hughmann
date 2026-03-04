@@ -1,5 +1,7 @@
 import * as p from '@clack/prompts'
+import pc from 'picocolors'
 import type { InfrastructureChoices } from '../types.js'
+import { setupSupabase } from './supabase-setup.js'
 
 export async function collectInfrastructure(systemName: string, existing?: InfrastructureChoices): Promise<InfrastructureChoices | symbol> {
   p.note(
@@ -99,10 +101,29 @@ export async function collectInfrastructure(systemName: string, existing?: Infra
   })
   if (p.isCancel(modelProviders)) return modelProviders
 
-  return {
+  const choices: InfrastructureChoices = {
     dataEngine: String(dataEngine),
     executionEngine: String(executionEngine),
     frontends: frontends as string[],
     modelProviders: modelProviders as string[],
   }
+
+  // Offer Supabase setup if selected
+  if (choices.dataEngine === 'supabase') {
+    const setupNow = await p.confirm({
+      message: 'Set up Supabase connection now?',
+      initialValue: true,
+    })
+
+    if (!p.isCancel(setupNow) && setupNow) {
+      const ok = await setupSupabase()
+      if (!ok) {
+        p.log.info(`You can set up Supabase later with: ${pc.cyan('hughmann migrate --apply')}`)
+      }
+    } else {
+      p.log.info(`Run ${pc.cyan('hughmann migrate --apply')} when you're ready to connect Supabase.`)
+    }
+  }
+
+  return choices
 }

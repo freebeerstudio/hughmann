@@ -44,7 +44,7 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
     options?: ModelAdapterOptions
   ): Promise<ModelResponse> {
     const queryFn = await this.getQuery()
-    const model = options?.model ?? 'claude-sonnet-4-6'
+    const model = options?.model ?? 'claude-opus-4-6'
     const tools = options?.tools
 
     const lastUserMsg = messages.filter(m => m.role === 'user').pop()
@@ -118,7 +118,7 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
     options?: ModelAdapterOptions
   ): AsyncIterable<ModelStreamChunk> {
     const queryFn = await this.getQuery()
-    const model = options?.model ?? 'claude-sonnet-4-6'
+    const model = options?.model ?? 'claude-opus-4-6'
     const tools = options?.tools
 
     const lastUserMsg = messages.filter(m => m.role === 'user').pop()

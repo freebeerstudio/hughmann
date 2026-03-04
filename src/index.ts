@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { join } from 'node:path'
 import * as p from '@clack/prompts'
 import pc from 'picocolors'

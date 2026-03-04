@@ -213,6 +213,9 @@ export class SupabaseAdapter {
   }
 
   // ─── Vector Memory ──────────────────────────────────────────────────────
+  //
+  // Uses the existing PAI memory_embeddings table schema (UUID ids, no FK to memories).
+  // Columns: id, content, domain, embedding, source, memory_type, importance, metadata, etc.
 
   async saveMemoryEmbedding(entry: {
     memoryId: number
@@ -222,11 +225,12 @@ export class SupabaseAdapter {
   }): Promise<void> {
     if (!this.ready) return
 
-    await this.client.from('memory_embeddings').upsert({
-      memory_id: entry.memoryId,
+    await this.client.from('memory_embeddings').insert({
       content: entry.content,
       domain: entry.domain,
       embedding: `[${entry.embedding.join(',')}]`,
+      source: 'hughmann',
+      memory_type: 'distilled',
     })
   }
 
@@ -239,7 +243,7 @@ export class SupabaseAdapter {
   }): Promise<number | null> {
     if (!this.ready) return null
 
-    // Insert memory and get its ID
+    // Insert memory into memories table
     const { data: memData } = await this.client.from('memories').insert({
       session_id: entry.sessionId,
       domain: entry.domain,
@@ -249,12 +253,14 @@ export class SupabaseAdapter {
 
     if (!memData?.id) return null
 
-    // Insert embedding
+    // Insert embedding into existing memory_embeddings table (no FK, uses source tag)
     await this.client.from('memory_embeddings').insert({
-      memory_id: memData.id,
       content: entry.content,
       domain: entry.domain,
       embedding: `[${entry.embedding.join(',')}]`,
+      source: 'hughmann',
+      memory_type: 'distilled',
+      metadata: { hughmann_memory_id: memData.id, session_id: entry.sessionId },
     })
 
     return memData.id
@@ -262,7 +268,7 @@ export class SupabaseAdapter {
 
   /**
    * Semantic similarity search using pgvector.
-   * Calls a Supabase RPC function that does cosine similarity.
+   * Uses the existing search_memory_v2 RPC function from PAI.
    */
   async searchMemories(queryEmbedding: number[], options?: {
     limit?: number
@@ -276,7 +282,7 @@ export class SupabaseAdapter {
   }[]> {
     if (!this.ready) return []
 
-    const { data } = await this.client.rpc('search_memories', {
+    const { data } = await this.client.rpc('search_memory_v2', {
       query_embedding: `[${queryEmbedding.join(',')}]`,
       match_count: options?.limit ?? 10,
       match_threshold: options?.threshold ?? 0.5,
@@ -296,6 +302,10 @@ export class SupabaseAdapter {
 export const MIGRATION_SQL = `
 -- HughMann Data Tables
 -- Run this in your Supabase SQL editor
+--
+-- NOTE: memory_embeddings table is NOT created here.
+-- HughMann reuses the existing PAI memory_embeddings table and search_memory_v2 function.
+-- New HughMann embeddings are tagged with source='hughmann', memory_type='distilled'.
 
 -- Sessions table
 CREATE TABLE IF NOT EXISTS sessions (
@@ -347,69 +357,27 @@ CREATE TABLE IF NOT EXISTS domain_notes (
 
 CREATE INDEX IF NOT EXISTS idx_domain_notes_domain ON domain_notes (domain);
 
--- Memory embeddings table (pgvector)
--- Requires: CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TABLE IF NOT EXISTS memory_embeddings (
-  id BIGSERIAL PRIMARY KEY,
-  memory_id BIGINT REFERENCES memories(id) ON DELETE CASCADE,
-  content TEXT NOT NULL,
-  domain TEXT,
-  embedding vector(1536),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_memory_embeddings_domain ON memory_embeddings (domain);
-
--- HNSW index for fast similarity search
-CREATE INDEX IF NOT EXISTS idx_memory_embeddings_vector
-  ON memory_embeddings USING hnsw (embedding vector_cosine_ops);
-
--- Semantic search function
-CREATE OR REPLACE FUNCTION search_memories(
-  query_embedding vector(1536),
-  match_count INT DEFAULT 10,
-  match_threshold FLOAT DEFAULT 0.5,
-  filter_domain TEXT DEFAULT NULL
-)
-RETURNS TABLE (
-  content TEXT,
-  domain TEXT,
-  similarity FLOAT,
-  memory_date DATE
-)
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  RETURN QUERY
-  SELECT
-    me.content,
-    me.domain,
-    1 - (me.embedding <=> query_embedding) AS similarity,
-    m.memory_date
-  FROM memory_embeddings me
-  JOIN memories m ON m.id = me.memory_id
-  WHERE (filter_domain IS NULL OR me.domain = filter_domain)
-    AND 1 - (me.embedding <=> query_embedding) > match_threshold
-  ORDER BY me.embedding <=> query_embedding
-  LIMIT match_count;
-END;
-$$;
-
--- Enable Row Level Security (optional but recommended)
+-- Enable Row Level Security
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE decisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE domain_notes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE memory_embeddings ENABLE ROW LEVEL SECURITY;
 
--- Allow all operations for authenticated users (adjust as needed)
-CREATE POLICY "Allow all for service key" ON sessions FOR ALL USING (true);
-CREATE POLICY "Allow all for service key" ON memories FOR ALL USING (true);
-CREATE POLICY "Allow all for service key" ON decisions FOR ALL USING (true);
-CREATE POLICY "Allow all for service key" ON domain_notes FOR ALL USING (true);
-CREATE POLICY "Allow all for service key" ON memory_embeddings FOR ALL USING (true);
+-- Allow all operations for service key
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'sessions' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON sessions FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'memories' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON memories FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'decisions' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON decisions FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'domain_notes' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON domain_notes FOR ALL USING (true);
+  END IF;
+END $$;
 `
 
 /**

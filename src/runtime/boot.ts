@@ -1,6 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { HUGHMANN_HOME } from '../config.js'
+import { loadEnvFile } from '../util/env.js'
 import { loadContext } from './context-loader.js'
 import { createModelAdapters } from '../adapters/model/index.js'
 import { ModelRouter } from './model-router.js'
@@ -134,29 +135,3 @@ export async function boot(): Promise<BootResult> {
   return { success: true, runtime, warnings, errors }
 }
 
-/**
- * Simple .env file loader. Reads KEY=VALUE lines and sets them on process.env.
- * Doesn't override existing env vars.
- */
-function loadEnvFile(path: string): void {
-  try {
-    const content = readFileSync(path, 'utf-8')
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) continue
-      const eqIndex = trimmed.indexOf('=')
-      if (eqIndex === -1) continue
-      const key = trimmed.slice(0, eqIndex).trim()
-      let value = trimmed.slice(eqIndex + 1).trim()
-      // Strip quotes
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1)
-      }
-      if (!process.env[key]) {
-        process.env[key] = value
-      }
-    }
-  } catch {
-    // Silently ignore .env read errors
-  }
-}

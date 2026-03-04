@@ -3,17 +3,18 @@ import type { ModelRequest, ModelResponse, ModelStreamChunk, TaskComplexity, Too
 
 /**
  * Maps task complexity to Claude model tier via OAuth ($0 via Max subscription).
+ * All tiers default to Opus 4.6 since Max subscription has no usage limits.
  * OpenRouter is reserved for non-Claude models (embeddings, image gen, etc.).
  *
  * | Complexity      | Model              |
  * |-----------------|--------------------|
- * | lightweight     | claude-haiku-4-5   |
- * | conversational  | claude-sonnet-4-6  |
+ * | lightweight     | claude-opus-4-6    |
+ * | conversational  | claude-opus-4-6    |
  * | autonomous      | claude-opus-4-6    |
  */
 const COMPLEXITY_MODEL_MAP: Record<TaskComplexity, string> = {
-  lightweight: 'claude-haiku-4-5-20251001',
-  conversational: 'claude-sonnet-4-6',
+  lightweight: 'claude-opus-4-6',
+  conversational: 'claude-opus-4-6',
   autonomous: 'claude-opus-4-6',
 }
 

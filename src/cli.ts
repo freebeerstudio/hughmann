@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import pc from 'picocolors'
 import { showBanner } from './banner.js'
 import { StreamMarkdownRenderer } from './util/markdown.js'
@@ -102,8 +103,24 @@ switch (flags.command) {
   }
 
   case 'migrate': {
-    const { getMigrationSQL } = await import('./adapters/data/supabase.js')
-    console.log(getMigrationSQL())
+    if (flags.args.includes('--apply')) {
+      // Load existing credentials from .env
+      const { join } = await import('node:path')
+      const { HUGHMANN_HOME } = await import('./config.js')
+      const { loadEnvFile } = await import('./util/env.js')
+      const envPath = join(HUGHMANN_HOME, '.env')
+      loadEnvFile(envPath)
+
+      const { setupSupabase } = await import('./onboarding/phases/supabase-setup.js')
+      const ok = await setupSupabase({
+        existingUrl: process.env.SUPABASE_URL,
+        existingKey: process.env.SUPABASE_KEY,
+      })
+      process.exit(ok ? 0 : 1)
+    } else {
+      const { getMigrationSQL } = await import('./adapters/data/supabase.js')
+      console.log(getMigrationSQL())
+    }
     break
   }
 
@@ -567,6 +584,8 @@ function showUsage() {
   console.log(`    ${pc.cyan('skills')}            List available skills`)
   console.log(`    ${pc.cyan('domains')}           List configured domains`)
   console.log(`    ${pc.cyan('schedule')}          Manage scheduled skills ${pc.dim('(launchd)')}`)
+  console.log(`    ${pc.cyan('migrate')}           Print Supabase migration SQL`)
+  console.log(`    ${pc.cyan('migrate --apply')}   Connect to Supabase and create tables`)
   console.log(`    ${pc.cyan('telegram')}          Start Telegram bot`)
   console.log(`    ${pc.cyan('serve')}             Start as MCP server ${pc.dim('(stdio)')}`)
   console.log(`    ${pc.cyan('daemon')}            Manage background daemon ${pc.dim('(start|stop|status|queue)')}`)
