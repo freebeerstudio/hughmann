@@ -1,5 +1,5 @@
 import type { ContextStore, DomainContext } from '../types/context.js'
-import type { ModelStreamChunk } from '../types/model.js'
+import type { ModelStreamChunk, ToolOptions } from '../types/model.js'
 import { ModelRouter } from './model-router.js'
 import { buildSystemPrompt } from './system-prompt-builder.js'
 import { reloadContext } from './context-loader.js'
@@ -106,6 +106,47 @@ export class Runtime {
     }
 
     this.sessions.addTurn(userMessage, fullResponse)
+    this.turnsSinceDistill += 2
+    await this.maybePeriodicDistill()
+  }
+
+  /**
+   * Autonomous task execution with tool use.
+   * Uses opus-tier model with Claude Code preset tools.
+   * Streams progress (tool use, text, status) back to the caller.
+   */
+  async *doTaskStream(task: string, options?: { maxTurns?: number; cwd?: string }): AsyncIterable<ModelStreamChunk> {
+    this.sessions.getOrCreate(this.activeDomain)
+
+    // Include conversation context so the agent knows what's been discussed
+    const contextMessages = [
+      ...this.sessions.getContextMessages(),
+      { role: 'user' as const, content: task },
+    ]
+
+    const systemPrompt = this.buildPrompt()
+
+    let fullResponse = ''
+
+    const toolOptions: Partial<ToolOptions> = {
+      maxTurns: options?.maxTurns ?? 25,
+      cwd: options?.cwd,
+    }
+
+    for await (const chunk of this.router.routeStream({
+      messages: contextMessages,
+      complexity: 'autonomous',
+      toolUse: true,
+      toolOptions,
+    }, systemPrompt)) {
+      if (chunk.type === 'text') {
+        fullResponse += chunk.content
+      }
+      yield chunk
+    }
+
+    // Save the task and response to session history
+    this.sessions.addTurn(`[Task] ${task}`, fullResponse || '[Task completed with tool use]')
     this.turnsSinceDistill += 2
     await this.maybePeriodicDistill()
   }

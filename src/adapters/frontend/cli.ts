@@ -4,6 +4,8 @@ import type { Runtime } from '../../runtime/runtime.js'
 
 const GOLD = (text: string) => `\x1b[38;2;200;140;60m${text}\x1b[0m`
 const DIM_COPPER = (text: string) => `\x1b[38;2;120;80;30m${text}\x1b[0m`
+const TOOL_ICON = '\u2699'  // ⚙
+const CHECK_ICON = '\u2713' // ✓
 
 // Store numbered session list for /resume by number
 let lastSessionList: { id: string }[] = []
@@ -337,6 +339,86 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       return
     }
 
+    case '/do': {
+      if (!args) {
+        console.log(`  ${pc.dim('Usage: /do <task description>')}`)
+        console.log(`  ${pc.dim('Example: /do Create a summary of my Omnissa domain goals')}`)
+        console.log(`  ${pc.dim('Example: /do Search the web for the latest MDM trends and write a report')}`)
+        return
+      }
+
+      const systemName = runtime.context.config.systemName
+      console.log()
+      console.log(`  ${GOLD(systemName)} ${pc.dim('is working on:')} ${pc.bold(args)}`)
+      console.log(`  ${pc.dim('Using Opus with tools. This may take a moment...')}`)
+      console.log()
+
+      try {
+        let hasText = false
+        let lastToolName: string | null = null
+
+        for await (const chunk of runtime.doTaskStream(args)) {
+          switch (chunk.type) {
+            case 'tool_use': {
+              // Show tool being invoked
+              if (hasText) {
+                process.stdout.write('\n')
+                hasText = false
+              }
+              lastToolName = chunk.metadata?.toolName ?? null
+              console.log(`  ${pc.yellow(TOOL_ICON)} ${pc.dim(chunk.content)}`)
+              break
+            }
+            case 'tool_progress': {
+              // Show tool progress (subtle)
+              break
+            }
+            case 'status': {
+              console.log(`  ${pc.green(CHECK_ICON)} ${pc.dim(chunk.content)}`)
+              break
+            }
+            case 'text': {
+              if (!hasText && lastToolName) {
+                // Transition from tool use to text output
+                console.log()
+                process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
+                lastToolName = null
+              } else if (!hasText) {
+                process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
+              }
+              process.stdout.write(chunk.content)
+              hasText = true
+              break
+            }
+            case 'error': {
+              console.error(pc.red(`\n  Error: ${chunk.content}`))
+              break
+            }
+            case 'done': {
+              if (hasText) {
+                process.stdout.write('\n')
+              }
+              const turns = chunk.metadata?.turnCount
+              const cost = chunk.metadata?.costUsd
+              const stats: string[] = []
+              if (turns) stats.push(`${turns} turns`)
+              if (cost !== undefined) stats.push(`$${cost.toFixed(4)}`)
+              if (stats.length > 0) {
+                console.log()
+                console.log(`  ${pc.dim(`Task complete (${stats.join(', ')})`)}`)
+              }
+              break
+            }
+          }
+        }
+        console.log()
+      } catch (err) {
+        console.error(pc.red(`\n  Task failed: ${err instanceof Error ? err.message : String(err)}`))
+        console.log()
+      }
+      return
+    }
+
     case '/help': {
       console.log()
       console.log(`  ${pc.bold('Conversation')}:`)
@@ -344,6 +426,9 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       console.log(`    ${pc.cyan('/sessions')}         List past sessions (numbered)`)
       console.log(`    ${pc.cyan('/resume <#>')}       Resume a session by number or ID`)
       console.log(`    ${pc.cyan('/clear')}            Start fresh without distilling`)
+      console.log()
+      console.log(`  ${pc.bold('Autonomous')}:`)
+      console.log(`    ${pc.cyan('/do <task>')}        Execute a task with tools ${pc.dim('(Opus + file/shell/web)')}`)
       console.log()
       console.log(`  ${pc.bold('Memory')}:`)
       console.log(`    ${pc.cyan('/distill')}          Extract learnings from current session`)

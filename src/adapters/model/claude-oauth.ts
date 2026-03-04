@@ -1,20 +1,32 @@
-import type { ModelAdapter } from '../../types/adapters.js'
+import type { ModelAdapter, ModelAdapterOptions } from '../../types/adapters.js'
 import type { ModelResponse, ModelStreamChunk } from '../../types/model.js'
+
+// Dangerous bash patterns to block in autonomous mode
+const DANGEROUS_PATTERNS = [
+  /\brm\s+(-\w*[rf]|--recursive|--force)/i,
+  /\bsudo\b/i,
+  /\bmkfs\b/i,
+  /\bdd\s+if=/i,
+  />\s*\/dev\/sd/i,
+  /\bgit\s+push\s+--force/i,
+  /\bgit\s+reset\s+--hard/i,
+]
 
 /**
  * Claude OAuth adapter using the Agent SDK.
  * Piggybacks on Claude Max subscription OAuth tokens (same auth as claude-code).
- * For conversational use: maxTurns: 1, no tools.
+ *
+ * Supports two modes:
+ * - Conversational: maxTurns: 1, no tools (fast Q&A)
+ * - Autonomous: maxTurns configurable, Claude Code preset tools (file read/write, shell, search)
  */
 export class ClaudeOAuthAdapter implements ModelAdapter {
   id = 'claude-oauth'
   name = 'Claude (Max OAuth)'
 
-  private queryFn: ((args: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>) | null = null
+  private queryFn: ((args: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>> & { setPermissionMode?: (mode: string) => Promise<void> }) | null = null
 
   isAvailable(): boolean {
-    // Always available since @anthropic-ai/claude-agent-sdk is a declared dependency.
-    // Auth errors are handled at call time.
     return true
   }
 
@@ -29,31 +41,47 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
   async complete(
     messages: { role: string; content: string }[],
     systemPrompt: string,
-    model?: string
+    options?: ModelAdapterOptions
   ): Promise<ModelResponse> {
     const queryFn = await this.getQuery()
+    const model = options?.model ?? 'claude-sonnet-4-6'
+    const tools = options?.tools
 
-    // Build a single prompt from the latest user message
     const lastUserMsg = messages.filter(m => m.role === 'user').pop()
     const prompt = lastUserMsg?.content ?? ''
 
     let responseText = ''
-    let responseModel = model ?? 'claude-sonnet-4-6'
+    let responseModel = model
 
-    const q = queryFn({
-      prompt,
-      options: {
-        model: responseModel,
-        systemPrompt,
-        maxTurns: 1,
-        permissionMode: 'dontAsk',
-      },
-    })
+    const queryOptions: Record<string, unknown> = {
+      model,
+      systemPrompt,
+      permissionMode: 'dontAsk',
+    }
+
+    if (tools?.enabled) {
+      queryOptions.maxTurns = tools.maxTurns ?? 25
+      queryOptions.tools = { type: 'preset', preset: 'claude_code' }
+      queryOptions.permissionMode = undefined // use canUseTool instead
+      queryOptions.canUseTool = createPermissionHandler(tools.allowedTools, tools.disallowedTools)
+      if (tools.cwd) {
+        queryOptions.cwd = tools.cwd
+      }
+      if (tools.allowedTools) {
+        queryOptions.allowedTools = tools.allowedTools
+      }
+      if (tools.disallowedTools) {
+        queryOptions.disallowedTools = tools.disallowedTools
+      }
+    } else {
+      queryOptions.maxTurns = 1
+    }
+
+    const q = queryFn({ prompt, options: queryOptions })
 
     for await (const message of q) {
       const msg = message as Record<string, unknown>
       if (msg.type === 'assistant') {
-        // Extract text from content blocks
         const assistantMsg = msg.message as Record<string, unknown> | undefined
         const content = assistantMsg?.content
         if (Array.isArray(content)) {
@@ -65,7 +93,6 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
         }
         responseModel = (assistantMsg?.model as string) ?? responseModel
       } else if (msg.type === 'result') {
-        // Result message has usage data
         if (msg.subtype === 'success' && msg.result) {
           if (!responseText) {
             responseText = msg.result as string
@@ -85,28 +112,48 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
   async *stream(
     messages: { role: string; content: string }[],
     systemPrompt: string,
-    model?: string
+    options?: ModelAdapterOptions
   ): AsyncIterable<ModelStreamChunk> {
     const queryFn = await this.getQuery()
+    const model = options?.model ?? 'claude-sonnet-4-6'
+    const tools = options?.tools
 
     const lastUserMsg = messages.filter(m => m.role === 'user').pop()
     const prompt = lastUserMsg?.content ?? ''
 
-    const q = queryFn({
-      prompt,
-      options: {
-        model: model ?? 'claude-sonnet-4-6',
-        systemPrompt,
-        maxTurns: 1,
-        permissionMode: 'dontAsk',
-        includePartialMessages: true,
-      },
-    })
+    const queryOptions: Record<string, unknown> = {
+      model,
+      systemPrompt,
+      includePartialMessages: true,
+    }
+
+    if (tools?.enabled) {
+      queryOptions.maxTurns = tools.maxTurns ?? 25
+      queryOptions.tools = { type: 'preset', preset: 'claude_code' }
+      queryOptions.permissionMode = undefined
+      queryOptions.canUseTool = createPermissionHandler(tools.allowedTools, tools.disallowedTools)
+      if (tools.cwd) {
+        queryOptions.cwd = tools.cwd
+      }
+      if (tools.allowedTools) {
+        queryOptions.allowedTools = tools.allowedTools
+      }
+      if (tools.disallowedTools) {
+        queryOptions.disallowedTools = tools.disallowedTools
+      }
+    } else {
+      queryOptions.maxTurns = 1
+      queryOptions.permissionMode = 'dontAsk'
+    }
+
+    const q = queryFn({ prompt, options: queryOptions })
 
     let lastText = ''
+    let currentToolName: string | null = null
 
     for await (const message of q) {
       const msg = message as Record<string, unknown>
+
       if (msg.type === 'assistant') {
         const assistantMsg = msg.message as Record<string, unknown> | undefined
         const content = assistantMsg?.content
@@ -115,6 +162,16 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
           for (const block of content) {
             if (block.type === 'text') {
               fullText += block.text
+            } else if (block.type === 'tool_use') {
+              // Claude is requesting a tool — emit tool_use chunk
+              const toolName = (block.name as string) ?? 'unknown'
+              const input = block.input as Record<string, unknown> | undefined
+              currentToolName = toolName
+              yield {
+                type: 'tool_use',
+                content: formatToolUse(toolName, input),
+                metadata: { toolName, toolId: block.id as string },
+              }
             }
           }
           if (fullText.length > lastText.length) {
@@ -122,15 +179,114 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
             lastText = fullText
           }
         }
-      } else if (msg.type === 'result') {
-        if (msg.subtype === 'success' && msg.result && !lastText) {
-          yield { type: 'text', content: msg.result as string }
+      } else if (msg.type === 'tool_progress') {
+        // Tool is executing
+        const toolName = (msg.tool_name as string) ?? currentToolName ?? 'tool'
+        yield {
+          type: 'tool_progress',
+          content: `${toolName} running...`,
+          metadata: {
+            toolName,
+            toolId: msg.tool_use_id as string,
+          },
         }
-        yield { type: 'done', content: '' }
+      } else if (msg.type === 'tool_use_summary') {
+        // Summary after tool use sequence
+        yield {
+          type: 'status',
+          content: msg.summary as string,
+        }
+      } else if (msg.type === 'result') {
+        const turnCount = msg.num_turns as number | undefined
+        const costUsd = msg.total_cost_usd as number | undefined
+
+        if (msg.subtype === 'success') {
+          // If there's a result text and we haven't captured text from assistant messages
+          if (msg.result && !lastText) {
+            yield { type: 'text', content: msg.result as string }
+          }
+          yield {
+            type: 'done',
+            content: '',
+            metadata: { turnCount, costUsd },
+          }
+        } else {
+          // Error result
+          const errors = msg.errors as string[] | undefined
+          yield {
+            type: 'error',
+            content: errors?.join('; ') ?? `Agent ended: ${msg.subtype}`,
+            metadata: { turnCount, costUsd },
+          }
+          yield { type: 'done', content: '', metadata: { turnCount, costUsd } }
+        }
         return
       }
     }
 
     yield { type: 'done', content: '' }
   }
+}
+
+/**
+ * Creates a permission handler for autonomous tool use.
+ * Auto-allows most tools, blocks destructive bash commands.
+ */
+function createPermissionHandler(
+  _allowedTools?: string[],
+  _disallowedTools?: string[],
+) {
+  return async (
+    toolName: string,
+    input: Record<string, unknown>,
+    _options: Record<string, unknown>,
+  ): Promise<{ behavior: string; message?: string; updatedInput?: Record<string, unknown> }> => {
+    // Block dangerous bash commands
+    if (toolName === 'Bash' || toolName === 'bash') {
+      const command = (input.command as string) ?? ''
+      for (const pattern of DANGEROUS_PATTERNS) {
+        if (pattern.test(command)) {
+          return {
+            behavior: 'deny',
+            message: `Blocked: "${command}" matches dangerous pattern. Use caution with destructive commands.`,
+          }
+        }
+      }
+    }
+
+    // Allow everything else
+    return { behavior: 'allow' }
+  }
+}
+
+/**
+ * Format a tool use for display.
+ */
+function formatToolUse(toolName: string, input?: Record<string, unknown>): string {
+  if (!input) return toolName
+
+  switch (toolName) {
+    case 'Read':
+      return `Reading ${input.file_path ?? 'file'}`
+    case 'Edit':
+      return `Editing ${input.file_path ?? 'file'}`
+    case 'Write':
+      return `Writing ${input.file_path ?? 'file'}`
+    case 'Bash':
+      return `Running: ${truncate(String(input.command ?? ''), 80)}`
+    case 'Grep':
+      return `Searching for "${truncate(String(input.pattern ?? ''), 40)}"`
+    case 'Glob':
+      return `Finding files: ${input.pattern ?? ''}`
+    case 'WebFetch':
+      return `Fetching ${input.url ?? 'URL'}`
+    case 'WebSearch':
+      return `Searching: "${truncate(String(input.query ?? ''), 60)}"`
+    default:
+      return toolName
+  }
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 3) + '...' : s
 }

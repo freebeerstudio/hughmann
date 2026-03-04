@@ -56,7 +56,7 @@ export class MemoryManager {
       const response = await this.model.complete(
         [{ role: 'user', content: prompt }],
         DISTILL_PROMPT,
-        'claude-haiku-4-5-20251001'
+        { model: 'claude-haiku-4-5-20251001' }
       )
 
       const extracted = response.content.trim()

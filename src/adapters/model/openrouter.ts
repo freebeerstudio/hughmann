@@ -1,4 +1,4 @@
-import type { ModelAdapter } from '../../types/adapters.js'
+import type { ModelAdapter, ModelAdapterOptions } from '../../types/adapters.js'
 import type { ModelResponse, ModelStreamChunk } from '../../types/model.js'
 
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1/chat/completions'
@@ -25,8 +25,9 @@ export class OpenRouterAdapter implements ModelAdapter {
   async complete(
     messages: { role: string; content: string }[],
     systemPrompt: string,
-    model?: string
+    options?: ModelAdapterOptions
   ): Promise<ModelResponse> {
+    const model = options?.model
     if (!this.apiKey) {
       throw new Error('OPENROUTER_API_KEY not set')
     }
@@ -81,8 +82,9 @@ export class OpenRouterAdapter implements ModelAdapter {
   async *stream(
     messages: { role: string; content: string }[],
     systemPrompt: string,
-    model?: string
+    options?: ModelAdapterOptions
   ): AsyncIterable<ModelStreamChunk> {
+    const model = options?.model
     if (!this.apiKey) {
       throw new Error('OPENROUTER_API_KEY not set')
     }

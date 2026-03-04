@@ -1,11 +1,16 @@
-import type { ModelRequest, ModelResponse, ModelStreamChunk } from './model.js'
+import type { ModelRequest, ModelResponse, ModelStreamChunk, ToolOptions } from './model.js'
+
+export interface ModelAdapterOptions {
+  model?: string
+  tools?: ToolOptions
+}
 
 export interface ModelAdapter {
   id: string
   name: string
   isAvailable(): boolean
-  complete(messages: { role: string; content: string }[], systemPrompt: string, model?: string): Promise<ModelResponse>
-  stream(messages: { role: string; content: string }[], systemPrompt: string, model?: string): AsyncIterable<ModelStreamChunk>
+  complete(messages: { role: string; content: string }[], systemPrompt: string, options?: ModelAdapterOptions): Promise<ModelResponse>
+  stream(messages: { role: string; content: string }[], systemPrompt: string, options?: ModelAdapterOptions): AsyncIterable<ModelStreamChunk>
 }
 
 export interface FrontendAdapter {

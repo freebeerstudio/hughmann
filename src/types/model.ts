@@ -7,6 +7,7 @@ export interface ModelRequest {
   domain?: string
   stream?: boolean
   toolUse?: boolean
+  toolOptions?: Partial<ToolOptions>
 }
 
 export interface ModelMessage {
@@ -23,6 +24,20 @@ export interface ModelResponse {
 }
 
 export interface ModelStreamChunk {
-  type: 'text' | 'done' | 'error'
+  type: 'text' | 'done' | 'error' | 'tool_use' | 'tool_progress' | 'status'
   content: string
+  metadata?: {
+    toolName?: string
+    toolId?: string
+    turnCount?: number
+    costUsd?: number
+  }
+}
+
+export interface ToolOptions {
+  enabled: boolean
+  cwd?: string
+  maxTurns?: number
+  allowedTools?: string[]
+  disallowedTools?: string[]
 }

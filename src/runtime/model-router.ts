@@ -1,5 +1,5 @@
-import type { ModelAdapter } from '../types/adapters.js'
-import type { ModelRequest, ModelResponse, ModelStreamChunk, TaskComplexity } from '../types/model.js'
+import type { ModelAdapter, ModelAdapterOptions } from '../types/adapters.js'
+import type { ModelRequest, ModelResponse, ModelStreamChunk, TaskComplexity, ToolOptions } from '../types/model.js'
 
 /**
  * Maps task complexity to Claude model tier via OAuth ($0 via Max subscription).
@@ -56,16 +56,32 @@ export class ModelRouter {
     throw new Error('No model adapters available. Install @anthropic-ai/claude-agent-sdk or set OPENROUTER_API_KEY.')
   }
 
+  private buildAdapterOptions(request: ModelRequest, model: string): ModelAdapterOptions {
+    const opts: ModelAdapterOptions = { model }
+
+    if (request.toolUse) {
+      opts.tools = {
+        enabled: true,
+        maxTurns: 25,
+        ...(request.toolOptions ?? {}),
+      }
+    }
+
+    return opts
+  }
+
   async route(request: ModelRequest, systemPrompt: string): Promise<ModelResponse> {
     const { adapter, model } = this.selectProvider(request)
     const messages = request.messages.map(m => ({ role: m.role, content: m.content }))
-    return adapter.complete(messages, systemPrompt, model)
+    const opts = this.buildAdapterOptions(request, model)
+    return adapter.complete(messages, systemPrompt, opts)
   }
 
   async *routeStream(request: ModelRequest, systemPrompt: string): AsyncIterable<ModelStreamChunk> {
     const { adapter, model } = this.selectProvider(request)
     const messages = request.messages.map(m => ({ role: m.role, content: m.content }))
-    yield* adapter.stream(messages, systemPrompt, model)
+    const opts = this.buildAdapterOptions(request, model)
+    yield* adapter.stream(messages, systemPrompt, opts)
   }
 
   getAvailableAdapters(): ModelAdapter[] {
