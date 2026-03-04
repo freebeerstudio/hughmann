@@ -11,6 +11,9 @@ import { MemoryManager } from './memory.js'
 import { loadMcpConfig } from './mcp-config.js'
 import { SkillManager } from './skills.js'
 import { SupabaseAdapter } from '../adapters/data/supabase.js'
+import { SQLiteAdapter } from '../adapters/data/sqlite.js'
+import type { DataAdapter } from '../adapters/data/types.js'
+import { loadConfig } from '../config.js'
 import { createEmbeddingAdapter } from '../adapters/embeddings/index.js'
 import { UsageTracker } from './usage.js'
 
@@ -111,26 +114,53 @@ export async function boot(): Promise<BootResult> {
     warnings.push(`Loaded ${customSkillCount} custom skill${customSkillCount !== 1 ? 's' : ''}`)
   }
 
-  // Initialize Supabase if configured
-  let supabase: SupabaseAdapter | undefined
-  const supabaseUrl = process.env.SUPABASE_URL
-  const supabaseKey = process.env.SUPABASE_KEY
-  if (supabaseUrl && supabaseKey) {
-    supabase = new SupabaseAdapter({ url: supabaseUrl, key: supabaseKey })
-    const initResult = await supabase.init()
+  // Initialize data adapter based on onboarding config
+  let dataAdapter: DataAdapter | undefined
+  const config = loadConfig()
+  const dataEngine = config.infrastructure?.dataEngine ?? 'none'
+
+  if (dataEngine === 'supabase') {
+    const supabaseUrl = process.env.SUPABASE_URL
+    const supabaseKey = process.env.SUPABASE_KEY
+    if (supabaseUrl && supabaseKey) {
+      const adapter = new SupabaseAdapter({ url: supabaseUrl, key: supabaseKey })
+      const initResult = await adapter.init()
+      if (initResult.success) {
+        warnings.push('Supabase connected')
+        dataAdapter = adapter
+      } else {
+        warnings.push(`Supabase: ${initResult.error}`)
+      }
+    }
+  } else if (dataEngine === 'sqlite') {
+    const adapter = new SQLiteAdapter(HUGHMANN_HOME)
+    const initResult = await adapter.init()
+    if (initResult.success) {
+      warnings.push('SQLite connected')
+      dataAdapter = adapter
+    } else {
+      warnings.push(`SQLite: ${initResult.error}`)
+    }
+  } else if (process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
+    // Fallback: if env vars are set but no config, still try Supabase
+    const adapter = new SupabaseAdapter({ url: process.env.SUPABASE_URL, key: process.env.SUPABASE_KEY })
+    const initResult = await adapter.init()
     if (initResult.success) {
       warnings.push('Supabase connected')
-      memory.setSupabase(supabase)
+      dataAdapter = adapter
     } else {
       warnings.push(`Supabase: ${initResult.error}`)
-      supabase = undefined
     }
+  }
+
+  if (dataAdapter) {
+    memory.setDataAdapter(dataAdapter)
   }
 
   // Initialize usage tracker
   const usage = new UsageTracker(HUGHMANN_HOME)
 
-  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers, skills, supabase, usage)
+  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers, skills, dataAdapter, usage)
 
   return { success: true, runtime, warnings, errors }
 }

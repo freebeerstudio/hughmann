@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 /**
@@ -65,4 +65,5 @@ export function writeEnvFile(path: string, entries: Record<string, string>): voi
   }
 
   writeFileSync(path, lines.join('\n'), 'utf-8')
+  chmodSync(path, 0o600) // Owner read/write only — contains secrets
 }

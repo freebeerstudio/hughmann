@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 
 import { join } from 'node:path'
 import type { ModelAdapter } from '../types/adapters.js'
 import type { EmbeddingAdapter } from '../adapters/embeddings/index.js'
-import type { SupabaseAdapter } from '../adapters/data/supabase.js'
+import type { DataAdapter } from '../adapters/data/types.js'
 import type { Session } from './session.js'
 
 const DISTILL_PROMPT = `You are a memory extraction system. Given a conversation between a user and their AI system, extract the key information worth remembering.
@@ -29,7 +29,7 @@ export class MemoryManager {
   private memoryDir: string
   private model: ModelAdapter | null = null
   private embeddings: EmbeddingAdapter | null = null
-  private supabase: SupabaseAdapter | null = null
+  private dataAdapter: DataAdapter | null = null
 
   constructor(hughmannHome: string) {
     this.memoryDir = join(hughmannHome, 'memory')
@@ -46,9 +46,9 @@ export class MemoryManager {
     this.embeddings = adapter
   }
 
-  /** Set the Supabase adapter for persistent vector storage */
-  setSupabase(adapter: SupabaseAdapter): void {
-    this.supabase = adapter
+  /** Set the data adapter for persistent storage and vector memory */
+  setDataAdapter(adapter: DataAdapter): void {
+    this.dataAdapter = adapter
   }
 
   /**
@@ -176,7 +176,7 @@ export class MemoryManager {
 
   /** Check if vector memory is available (needs both embeddings + Supabase) */
   hasVectorMemory(): boolean {
-    return !!(this.embeddings && this.supabase)
+    return !!(this.embeddings && this.dataAdapter)
   }
 
   /**
@@ -184,11 +184,11 @@ export class MemoryManager {
    * Called after distillation to enable semantic search.
    */
   async embedAndStore(content: string, sessionId: string, domain: string | null): Promise<void> {
-    if (!this.embeddings || !this.supabase) return
+    if (!this.embeddings || !this.dataAdapter) return
 
     try {
       const embedding = await this.embeddings.embed(content)
-      await this.supabase.saveMemoryWithEmbedding({
+      await this.dataAdapter.saveMemoryWithEmbedding({
         sessionId,
         domain,
         content,
@@ -209,11 +209,11 @@ export class MemoryManager {
     domain?: string
     threshold?: number
   }): Promise<{ content: string; domain: string | null; similarity: number }[]> {
-    if (!this.embeddings || !this.supabase) return []
+    if (!this.embeddings || !this.dataAdapter) return []
 
     try {
       const queryEmbedding = await this.embeddings.embed(query)
-      return await this.supabase.searchMemories(queryEmbedding, options)
+      return await this.dataAdapter.searchMemories(queryEmbedding, options)
     } catch {
       return []
     }

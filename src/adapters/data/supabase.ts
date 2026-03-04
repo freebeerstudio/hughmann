@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import type { DataAdapter } from './types.js'
 
 export interface SupabaseConfig {
   url: string
@@ -15,7 +16,7 @@ export interface SupabaseConfig {
  *   decisions      - Decision log entries
  *   domain_notes   - Per-domain notes and context
  */
-export class SupabaseAdapter {
+export class SupabaseAdapter implements DataAdapter {
   private client: SupabaseClient
   private ready = false
 

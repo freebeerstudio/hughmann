@@ -8,7 +8,7 @@ import type { SessionSummary } from './session.js'
 import { ContextWriter } from './context-writer.js'
 import { MemoryManager } from './memory.js'
 import { SkillManager } from './skills.js'
-import type { SupabaseAdapter } from '../adapters/data/supabase.js'
+import type { DataAdapter } from '../adapters/data/types.js'
 import type { UsageTracker } from './usage.js'
 import { SubAgentManager } from './sub-agents.js'
 import type { SubAgent, SubAgentResult } from './sub-agents.js'
@@ -30,7 +30,7 @@ export class Runtime {
   firstBoot = false
   mcpServers: Record<string, McpServerConfig>
   skills: SkillManager
-  supabase?: SupabaseAdapter
+  data?: DataAdapter
   usage?: UsageTracker
 
   private contextDir: string
@@ -45,7 +45,7 @@ export class Runtime {
     memory: MemoryManager,
     mcpServers?: Record<string, McpServerConfig>,
     skills?: SkillManager,
-    supabase?: SupabaseAdapter,
+    data?: DataAdapter,
     usage?: UsageTracker,
   ) {
     this.context = context
@@ -56,7 +56,7 @@ export class Runtime {
     this.memory = memory
     this.mcpServers = mcpServers ?? {}
     this.skills = skills ?? new SkillManager(contextDir.replace('/context', ''))
-    this.supabase = supabase
+    this.data = data
     this.usage = usage
   }
 
@@ -268,7 +268,7 @@ export class Runtime {
       this.memory.markDistilled(session.id)
       this.turnsSinceDistill = 0
       // Sync memory to Supabase (text)
-      this.supabase?.saveMemory({
+      this.data?.saveMemory({
         sessionId: session.id,
         domain: session.domain,
         content: result,
@@ -454,13 +454,13 @@ export class Runtime {
     return this.watcher?.isActive() ?? false
   }
 
-  /** Fire-and-forget sync of current session to Supabase */
+  /** Fire-and-forget sync of current session to data adapter */
   private syncSessionToSupabase(): void {
-    if (!this.supabase) return
+    if (!this.data) return
     const session = this.sessions.getCurrent()
     if (!session) return
 
-    this.supabase.saveSession({
+    this.data.saveSession({
       id: session.id,
       title: session.title,
       domain: session.domain,
