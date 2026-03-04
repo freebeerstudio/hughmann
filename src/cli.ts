@@ -117,6 +117,11 @@ switch (flags.command) {
     break
   }
 
+  case 'daemon': {
+    await manageDaemon(flags)
+    break
+  }
+
   case 'status': {
     await runBuiltinSkill('status', flags)
     break
@@ -395,6 +400,66 @@ async function startMcpServer() {
 }
 
 /**
+ * `hughmann daemon [start|stop|status]` — Manage the daemon process
+ */
+async function manageDaemon(flags: CliFlags) {
+  const { startDaemon, stopDaemon, getDaemonStatus, enqueueTask } = await import('./daemon/index.js')
+  const subcommand = flags.args[0] ?? 'start'
+
+  switch (subcommand) {
+    case 'start': {
+      await startDaemon()
+      break
+    }
+    case 'stop': {
+      const stopped = stopDaemon()
+      if (stopped) {
+        console.log(`  ${pc.green('\u2713')} Daemon stopped`)
+      } else {
+        console.log(`  ${pc.dim('No daemon running')}`)
+      }
+      break
+    }
+    case 'status': {
+      const status = getDaemonStatus()
+      if (status.running) {
+        console.log(`  ${pc.green('\u2713')} Daemon running (PID: ${status.pid})`)
+        if (status.uptime) {
+          console.log(`  ${pc.dim(status.uptime)}`)
+        }
+      } else {
+        console.log(`  ${pc.dim('Daemon not running')}`)
+      }
+      break
+    }
+    case 'queue': {
+      const taskContent = flags.args.slice(1).join(' ')
+      if (!taskContent) {
+        console.error(`  ${pc.red('Usage')}: hughmann daemon queue <task description>`)
+        process.exit(1)
+      }
+      enqueueTask({
+        type: 'task',
+        content: taskContent,
+        source: 'cli',
+        createdAt: new Date().toISOString(),
+      })
+      console.log(`  ${pc.green('\u2713')} Task queued for daemon`)
+      break
+    }
+    default: {
+      console.log(`  ${pc.bold('Usage')}: hughmann daemon [start|stop|status|queue]`)
+      console.log()
+      console.log(`    ${pc.cyan('start')}             Start the daemon process`)
+      console.log(`    ${pc.cyan('stop')}              Stop the daemon`)
+      console.log(`    ${pc.cyan('status')}            Check daemon status`)
+      console.log(`    ${pc.cyan('queue <task>')}      Queue a task for the daemon`)
+      console.log()
+    }
+  }
+}
+
+/**
  * `hughmann schedule [install|list|remove]` — Manage scheduled skills via launchd
  */
 async function manageSchedule(flags: CliFlags) {
@@ -504,6 +569,7 @@ function showUsage() {
   console.log(`    ${pc.cyan('schedule')}          Manage scheduled skills ${pc.dim('(launchd)')}`)
   console.log(`    ${pc.cyan('telegram')}          Start Telegram bot`)
   console.log(`    ${pc.cyan('serve')}             Start as MCP server ${pc.dim('(stdio)')}`)
+  console.log(`    ${pc.cyan('daemon')}            Manage background daemon ${pc.dim('(start|stop|status|queue)')}`)
   console.log()
   console.log(`  ${pc.bold('Flags')}:`)
   console.log(`    ${pc.cyan('-c, --continue')}    Resume the most recent session`)
