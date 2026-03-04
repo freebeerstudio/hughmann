@@ -73,6 +73,9 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
       if (tools.disallowedTools) {
         queryOptions.disallowedTools = tools.disallowedTools
       }
+      if (tools.mcpServers && Object.keys(tools.mcpServers).length > 0) {
+        queryOptions.mcpServers = tools.mcpServers
+      }
     } else {
       queryOptions.maxTurns = 1
     }
@@ -140,6 +143,9 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
       }
       if (tools.disallowedTools) {
         queryOptions.disallowedTools = tools.disallowedTools
+      }
+      if (tools.mcpServers && Object.keys(tools.mcpServers).length > 0) {
+        queryOptions.mcpServers = tools.mcpServers
       }
     } else {
       queryOptions.maxTurns = 1

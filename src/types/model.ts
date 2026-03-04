@@ -40,4 +40,15 @@ export interface ToolOptions {
   maxTurns?: number
   allowedTools?: string[]
   disallowedTools?: string[]
+  mcpServers?: Record<string, McpServerConfig>
+}
+
+export interface McpServerConfig {
+  /** 'stdio' for local process, 'sse' for remote HTTP */
+  type?: 'stdio' | 'sse'
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+  /** For SSE transport */
+  url?: string
 }

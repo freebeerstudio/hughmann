@@ -1,5 +1,5 @@
 import type { ContextStore, DomainContext } from '../types/context.js'
-import type { ModelStreamChunk, ToolOptions } from '../types/model.js'
+import type { ModelStreamChunk, ToolOptions, McpServerConfig } from '../types/model.js'
 import { ModelRouter } from './model-router.js'
 import { buildSystemPrompt } from './system-prompt-builder.js'
 import { reloadContext } from './context-loader.js'
@@ -22,6 +22,7 @@ export class Runtime {
   memory: MemoryManager
   activeDomain: string | null = null
   firstBoot = false
+  mcpServers: Record<string, McpServerConfig>
 
   private contextDir: string
   private turnsSinceDistill = 0
@@ -32,6 +33,7 @@ export class Runtime {
     contextDir: string,
     sessions: SessionManager,
     memory: MemoryManager,
+    mcpServers?: Record<string, McpServerConfig>,
   ) {
     this.context = context
     this.router = router
@@ -39,6 +41,7 @@ export class Runtime {
     this.sessions = sessions
     this.writer = new ContextWriter(contextDir)
     this.memory = memory
+    this.mcpServers = mcpServers ?? {}
   }
 
   setDomain(slug: string | null): void {
@@ -131,6 +134,7 @@ export class Runtime {
     const toolOptions: Partial<ToolOptions> = {
       maxTurns: options?.maxTurns ?? 25,
       cwd: options?.cwd,
+      mcpServers: Object.keys(this.mcpServers).length > 0 ? this.mcpServers : undefined,
     }
 
     for await (const chunk of this.router.routeStream({

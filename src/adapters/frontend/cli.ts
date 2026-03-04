@@ -339,6 +339,38 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       return
     }
 
+    case '/mcp': {
+      const servers = runtime.mcpServers
+      const names = Object.keys(servers)
+      if (names.length === 0) {
+        console.log(`  ${pc.dim('No MCP servers configured.')}`)
+        console.log(`  ${pc.dim('Add servers to ~/.hughmann/mcp.json to enable external tools.')}`)
+        console.log()
+        console.log(`  ${pc.dim('Example mcp.json:')}`)
+        console.log(`  ${pc.dim('{')}`)
+        console.log(`  ${pc.dim('  "servers": {')}`)
+        console.log(`  ${pc.dim('    "filesystem": {')}`)
+        console.log(`  ${pc.dim('      "command": "npx",')}`)
+        console.log(`  ${pc.dim('      "args": ["-y", "@anthropic-ai/filesystem-mcp", "/path/to/dir"]')}`)
+        console.log(`  ${pc.dim('    }')}`)
+        console.log(`  ${pc.dim('  }')}`)
+        console.log(`  ${pc.dim('}')}`)
+      } else {
+        console.log()
+        console.log(`  ${pc.bold('MCP Servers')} (${names.length}):`)
+        for (const name of names) {
+          const server = servers[name]
+          const transport = server.type === 'sse' ? 'SSE' : 'stdio'
+          const cmd = server.command + (server.args ? ' ' + server.args.join(' ') : '')
+          console.log(`  ${pc.green('\u2022')} ${pc.bold(name)} ${pc.dim(`[${transport}]`)} ${pc.dim(cmd)}`)
+        }
+        console.log()
+        console.log(`  ${pc.dim('These servers are available when using /do tasks.')}`)
+      }
+      console.log()
+      return
+    }
+
     case '/do': {
       if (!args) {
         console.log(`  ${pc.dim('Usage: /do <task description>')}`)
@@ -428,7 +460,8 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       console.log(`    ${pc.cyan('/clear')}            Start fresh without distilling`)
       console.log()
       console.log(`  ${pc.bold('Autonomous')}:`)
-      console.log(`    ${pc.cyan('/do <task>')}        Execute a task with tools ${pc.dim('(Opus + file/shell/web)')}`)
+      console.log(`    ${pc.cyan('/do <task>')}        Execute a task with tools ${pc.dim('(Opus + file/shell/web/MCP)')}`)
+      console.log(`    ${pc.cyan('/mcp')}              List configured MCP servers`)
       console.log()
       console.log(`  ${pc.bold('Memory')}:`)
       console.log(`    ${pc.cyan('/distill')}          Extract learnings from current session`)

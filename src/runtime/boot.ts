@@ -7,6 +7,7 @@ import { ModelRouter } from './model-router.js'
 import { Runtime } from './runtime.js'
 import { SessionManager } from './session.js'
 import { MemoryManager } from './memory.js'
+import { loadMcpConfig } from './mcp-config.js'
 
 export interface BootResult {
   success: boolean
@@ -71,6 +72,15 @@ export function boot(): BootResult {
     return { success: false, warnings, errors }
   }
 
+  // Load MCP server config
+  const { config: mcpConfig, warnings: mcpWarnings } = loadMcpConfig(HUGHMANN_HOME)
+  warnings.push(...mcpWarnings)
+
+  const mcpCount = Object.keys(mcpConfig.servers).length
+  if (mcpCount > 0) {
+    warnings.push(`Loaded ${mcpCount} MCP server${mcpCount !== 1 ? 's' : ''}: ${Object.keys(mcpConfig.servers).join(', ')}`)
+  }
+
   // Create router, session manager, memory manager, and runtime
   const router = new ModelRouter(adapters)
   const sessions = new SessionManager(HUGHMANN_HOME)
@@ -81,7 +91,7 @@ export function boot(): BootResult {
   const distillAdapter = adapters.find(a => a.id === 'claude-oauth') ?? adapters[0]
   memory.setModel(distillAdapter)
 
-  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory)
+  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers)
 
   return { success: true, runtime, warnings, errors }
 }
