@@ -209,7 +209,7 @@ Uses any OpenAI-compatible embedding API. Add to `~/.hughmann/.env`:
 
 ```
 # Required (or use OPENAI_API_KEY)
-EMBEDDING_API_KEY=sk-...
+EMBEDDING_API_KEY=your-embedding-api-key
 
 # Optional: custom endpoint (default: OpenAI)
 EMBEDDING_API_URL=https://api.openai.com/v1/embeddings

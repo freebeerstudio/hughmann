@@ -90,14 +90,14 @@ Edit `~/.hughmann/.env`:
 
 ```bash
 # Required if not using Claude OAuth
-OPENROUTER_API_KEY=sk-or-...
+OPENROUTER_API_KEY=your-openrouter-key
 
 # Optional: persistent storage + vector memory
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your-anon-key
+SUPABASE_KEY=your-supabase-anon-key
 
 # Optional: vector memory search
-EMBEDDING_API_KEY=sk-...
+EMBEDDING_API_KEY=your-embedding-api-key
 
 # Optional: Telegram bot
 TELEGRAM_BOT_TOKEN=your-bot-token

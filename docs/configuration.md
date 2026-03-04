@@ -92,17 +92,17 @@ Claude OAuth (via Claude Max subscription) is the preferred provider and require
 
 ```bash
 # Model provider (if not using Claude Max)
-OPENROUTER_API_KEY=sk-or-v1-abc123
+OPENROUTER_API_KEY=your-openrouter-key
 
 # Persistent storage + vector memory
 SUPABASE_URL=https://myproject.supabase.co
-SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+SUPABASE_KEY=your-supabase-anon-key
 
 # Embeddings
-EMBEDDING_API_KEY=sk-abc123
+EMBEDDING_API_KEY=your-embedding-api-key
 
 # Telegram
-TELEGRAM_BOT_TOKEN=7123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 ```
 
 ## mcp.json
