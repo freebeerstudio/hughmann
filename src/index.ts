@@ -61,7 +61,7 @@ async function main() {
   // Boot and launch chat
   console.log()
   const { boot } = await import('./runtime/boot.js')
-  const bootResult = boot()
+  const bootResult = await boot()
 
   if (!bootResult.success || !bootResult.runtime) {
     console.log()

@@ -8,6 +8,7 @@ import type { SessionSummary } from './session.js'
 import { ContextWriter } from './context-writer.js'
 import { MemoryManager } from './memory.js'
 import { SkillManager } from './skills.js'
+import type { SupabaseAdapter } from '../adapters/data/supabase.js'
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000 // 2 hours
 const DISTILL_INTERVAL = 10 // every 10 turns (5 user + 5 assistant)
@@ -25,6 +26,7 @@ export class Runtime {
   firstBoot = false
   mcpServers: Record<string, McpServerConfig>
   skills: SkillManager
+  supabase?: SupabaseAdapter
 
   private contextDir: string
   private turnsSinceDistill = 0
@@ -37,6 +39,7 @@ export class Runtime {
     memory: MemoryManager,
     mcpServers?: Record<string, McpServerConfig>,
     skills?: SkillManager,
+    supabase?: SupabaseAdapter,
   ) {
     this.context = context
     this.router = router
@@ -46,6 +49,7 @@ export class Runtime {
     this.memory = memory
     this.mcpServers = mcpServers ?? {}
     this.skills = skills ?? new SkillManager(contextDir.replace('/context', ''))
+    this.supabase = supabase
   }
 
   setDomain(slug: string | null): void {
@@ -87,6 +91,7 @@ export class Runtime {
     this.sessions.addTurn(userMessage, response.content)
     this.turnsSinceDistill += 2
     await this.maybePeriodicDistill()
+    this.syncSessionToSupabase()
 
     return response.content
   }
@@ -115,6 +120,7 @@ export class Runtime {
     this.sessions.addTurn(userMessage, fullResponse)
     this.turnsSinceDistill += 2
     await this.maybePeriodicDistill()
+    this.syncSessionToSupabase()
   }
 
   /**
@@ -157,6 +163,7 @@ export class Runtime {
     this.sessions.addTurn(`[Task] ${task}`, fullResponse || '[Task completed with tool use]')
     this.turnsSinceDistill += 2
     await this.maybePeriodicDistill()
+    this.syncSessionToSupabase()
   }
 
   /**
@@ -218,6 +225,13 @@ export class Runtime {
     if (result) {
       this.memory.markDistilled(session.id)
       this.turnsSinceDistill = 0
+      // Sync memory to Supabase
+      this.supabase?.saveMemory({
+        sessionId: session.id,
+        domain: session.domain,
+        content: result,
+        date: new Date().toISOString().split('T')[0],
+      }).catch(() => {})
     }
     return result
   }
@@ -314,5 +328,25 @@ export class Runtime {
       title: current.title,
       messageCount: current.messages.length,
     }
+  }
+
+  /** Fire-and-forget sync of current session to Supabase */
+  private syncSessionToSupabase(): void {
+    if (!this.supabase) return
+    const session = this.sessions.getCurrent()
+    if (!session) return
+
+    this.supabase.saveSession({
+      id: session.id,
+      title: session.title,
+      domain: session.domain,
+      messages: session.messages.map(m => ({
+        role: m.role,
+        content: m.content,
+        timestamp: new Date().toISOString(),
+      })),
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+    }).catch(() => {}) // Best-effort, don't block chat
   }
 }

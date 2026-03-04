@@ -101,6 +101,12 @@ switch (flags.command) {
     break
   }
 
+  case 'migrate': {
+    const { getMigrationSQL } = await import('./adapters/data/supabase.js')
+    console.log(getMigrationSQL())
+    break
+  }
+
   case 'telegram': {
     await startTelegram(flags)
     break
@@ -141,7 +147,7 @@ switch (flags.command) {
 
 async function bootRuntime(flags: { domain?: string | null; quiet?: boolean }) {
   const { boot } = await import('./runtime/boot.js')
-  const result = boot()
+  const result = await boot()
 
   if (!flags.quiet) {
     for (const warning of result.warnings) {

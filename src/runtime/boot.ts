@@ -9,6 +9,7 @@ import { SessionManager } from './session.js'
 import { MemoryManager } from './memory.js'
 import { loadMcpConfig } from './mcp-config.js'
 import { SkillManager } from './skills.js'
+import { SupabaseAdapter } from '../adapters/data/supabase.js'
 
 export interface BootResult {
   success: boolean
@@ -25,7 +26,7 @@ export interface BootResult {
  * 4. Initialize model adapters
  * 5. Create router and runtime
  */
-export function boot(): BootResult {
+export async function boot(): Promise<BootResult> {
   const warnings: string[] = []
   const errors: string[] = []
 
@@ -100,7 +101,22 @@ export function boot(): BootResult {
     warnings.push(`Loaded ${customSkillCount} custom skill${customSkillCount !== 1 ? 's' : ''}`)
   }
 
-  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers, skills)
+  // Initialize Supabase if configured
+  let supabase: SupabaseAdapter | undefined
+  const supabaseUrl = process.env.SUPABASE_URL
+  const supabaseKey = process.env.SUPABASE_KEY
+  if (supabaseUrl && supabaseKey) {
+    supabase = new SupabaseAdapter({ url: supabaseUrl, key: supabaseKey })
+    const initResult = await supabase.init()
+    if (initResult.success) {
+      warnings.push('Supabase connected')
+    } else {
+      warnings.push(`Supabase: ${initResult.error}`)
+      supabase = undefined
+    }
+  }
+
+  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers, skills, supabase)
 
   return { success: true, runtime, warnings, errors }
 }
