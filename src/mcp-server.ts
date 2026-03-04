@@ -285,6 +285,22 @@ server.tool(
 )
 
 server.tool(
+  'run_parallel',
+  'Decompose a complex task into sub-agents and run them in parallel. Best for tasks with independent parts.',
+  { task: z.string().describe('The complex task to decompose and run in parallel') },
+  async ({ task }) => {
+    const rt = await getRuntime()
+    const chunks: string[] = []
+
+    for await (const chunk of rt.decomposeAndRun(task)) {
+      if (chunk.type === 'text') chunks.push(chunk.content)
+    }
+
+    return { content: [{ type: 'text', text: chunks.join('') || 'Task completed.' }] }
+  },
+)
+
+server.tool(
   'reload_context',
   'Reload context documents from disk. Use after editing ~/.hughmann/context/ files.',
   async () => {

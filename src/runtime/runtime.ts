@@ -10,6 +10,8 @@ import { MemoryManager } from './memory.js'
 import { SkillManager } from './skills.js'
 import type { SupabaseAdapter } from '../adapters/data/supabase.js'
 import type { UsageTracker } from './usage.js'
+import { SubAgentManager } from './sub-agents.js'
+import type { SubAgent, SubAgentResult } from './sub-agents.js'
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000 // 2 hours
 const DISTILL_INTERVAL = 10 // every 10 turns (5 user + 5 assistant)
@@ -305,6 +307,52 @@ export class Runtime {
     }
 
     return prompt
+  }
+
+  /**
+   * Run multiple sub-agents in parallel for complex tasks.
+   * Each agent gets its own model call with appropriate complexity tier.
+   */
+  async runSubAgents(agents: SubAgent[]): Promise<SubAgentResult[]> {
+    const systemPrompt = this.buildPrompt()
+    const manager = new SubAgentManager(this.router, systemPrompt, this.mcpServers)
+    return manager.runParallel(agents)
+  }
+
+  /**
+   * Decompose a complex task into sub-agents and run them in parallel.
+   * Uses a planning call to break the task into independent pieces.
+   */
+  async *decomposeAndRun(task: string): AsyncIterable<ModelStreamChunk> {
+    const systemPrompt = this.buildPrompt()
+    const manager = new SubAgentManager(this.router, systemPrompt, this.mcpServers)
+
+    // First: decompose the task
+    yield { type: 'status', content: 'Analyzing task and planning sub-agents...' }
+    const agents = await manager.decompose(task, systemPrompt)
+
+    if (agents.length <= 1) {
+      // Not worth decomposing — run as single task
+      yield { type: 'status', content: 'Running as single task (not decomposable)' }
+      yield* this.doTaskStream(task)
+      return
+    }
+
+    // Run all sub-agents in parallel
+    yield* manager.runParallelStream(agents)
+
+    // Synthesize results
+    const results = await manager.runParallel(agents)
+    const synthesis = results
+      .filter(r => r.success)
+      .map(r => `## ${r.name}\n\n${r.content}`)
+      .join('\n\n---\n\n')
+
+    if (synthesis) {
+      yield { type: 'text', content: synthesis }
+    }
+
+    yield { type: 'done', content: '' }
   }
 
   /** Semantic search across memories (requires embeddings + Supabase) */

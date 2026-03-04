@@ -484,6 +484,50 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       return
     }
 
+    case '/parallel': {
+      if (!args) {
+        console.log(`  ${pc.dim('Usage: /parallel <complex task description>')}`)
+        console.log(`  ${pc.dim('Decomposes the task into sub-agents and runs them in parallel.')}`)
+        return
+      }
+
+      const systemName2 = runtime.context.config.systemName
+      console.log()
+      console.log(`  ${GOLD(systemName2)} ${pc.dim('decomposing and parallelizing:')} ${pc.bold(args)}`)
+      console.log()
+
+      try {
+        const md = new StreamMarkdownRenderer()
+        for await (const chunk of runtime.decomposeAndRun(args)) {
+          switch (chunk.type) {
+            case 'status':
+              console.log(`  ${pc.green(CHECK_ICON)} ${pc.dim(chunk.content)}`)
+              break
+            case 'tool_use':
+              console.log(`  ${pc.yellow(TOOL_ICON)} ${pc.dim(chunk.content)}`)
+              break
+            case 'text': {
+              const rendered = md.feed(chunk.content)
+              if (rendered) process.stdout.write(rendered)
+              break
+            }
+            case 'error':
+              console.error(`  ${pc.red(chunk.content)}`)
+              break
+            case 'done': {
+              const flushed = md.flush()
+              if (flushed) process.stdout.write(flushed)
+              break
+            }
+          }
+        }
+        console.log()
+      } catch (err) {
+        console.error(pc.red(`\n  Parallel task failed: ${err instanceof Error ? err.message : String(err)}`))
+      }
+      return
+    }
+
     case '/skills': {
       const builtins = runtime.skills.listBuiltin()
       const custom = runtime.skills.listCustom()
@@ -528,6 +572,7 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       console.log()
       console.log(`  ${pc.bold('Autonomous')}:`)
       console.log(`    ${pc.cyan('/do <task>')}        Execute a task with tools ${pc.dim('(Opus + file/shell/web/MCP)')}`)
+      console.log(`    ${pc.cyan('/parallel <task>')}  Decompose into sub-agents and run in parallel`)
       console.log(`    ${pc.cyan('/skills')}           List all available skills`)
       console.log(`    ${pc.cyan('/mcp')}              List configured MCP servers`)
       console.log()
