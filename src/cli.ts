@@ -101,6 +101,11 @@ switch (flags.command) {
     break
   }
 
+  case 'telegram': {
+    await startTelegram(flags)
+    break
+  }
+
   case 'status': {
     await runBuiltinSkill('status', flags)
     break
@@ -351,6 +356,27 @@ async function listDomains() {
 }
 
 /**
+ * `hughmann telegram` — Start the Telegram bot
+ */
+async function startTelegram(flags: CliFlags) {
+  const runtime = await bootRuntime(flags)
+  await runtime.initSession()
+
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) {
+    console.error(`  ${pc.red('TELEGRAM_BOT_TOKEN not set.')}`)
+    console.error(`  ${pc.dim('Add it to ~/.hughmann/.env:')}`)
+    console.error(`  ${pc.dim('TELEGRAM_BOT_TOKEN=your-bot-token-here')}`)
+    console.error()
+    console.error(`  ${pc.dim('Create a bot via @BotFather on Telegram to get a token.')}`)
+    process.exit(1)
+  }
+
+  const { startTelegramBot } = await import('./adapters/frontend/telegram.js')
+  await startTelegramBot(runtime, token)
+}
+
+/**
  * `hughmann schedule [install|list|remove]` — Manage scheduled skills via launchd
  */
 async function manageSchedule(flags: CliFlags) {
@@ -458,6 +484,7 @@ function showUsage() {
   console.log(`    ${pc.cyan('skills')}            List available skills`)
   console.log(`    ${pc.cyan('domains')}           List configured domains`)
   console.log(`    ${pc.cyan('schedule')}          Manage scheduled skills ${pc.dim('(launchd)')}`)
+  console.log(`    ${pc.cyan('telegram')}          Start Telegram bot`)
   console.log()
   console.log(`  ${pc.bold('Flags')}:`)
   console.log(`    ${pc.cyan('-c, --continue')}    Resume the most recent session`)
