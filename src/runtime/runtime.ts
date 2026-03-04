@@ -5,6 +5,7 @@ import { buildSystemPrompt } from './system-prompt-builder.js'
 import { reloadContext } from './context-loader.js'
 import { SessionManager } from './session.js'
 import type { SessionSummary } from './session.js'
+import { ContextWriter } from './context-writer.js'
 
 /**
  * The central runtime orchestrator. Holds state, handles turns, manages domain switching.
@@ -13,6 +14,7 @@ export class Runtime {
   context: ContextStore
   router: ModelRouter
   sessions: SessionManager
+  writer: ContextWriter
   activeDomain: string | null = null
 
   private contextDir: string
@@ -22,6 +24,7 @@ export class Runtime {
     this.router = router
     this.contextDir = contextDir
     this.sessions = sessions
+    this.writer = new ContextWriter(contextDir)
   }
 
   setDomain(slug: string | null): void {

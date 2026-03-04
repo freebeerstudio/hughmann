@@ -222,6 +222,63 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
       return
     }
 
+    case '/log': {
+      // /log <decision> | <reasoning> | <domain>
+      const pipeParts = args.split('|').map(s => s.trim())
+      if (pipeParts.length < 2) {
+        console.log(`  ${pc.dim('Usage: /log <decision> | <reasoning> | <domain>')}`)
+        console.log(`  ${pc.dim('Example: /log Chose Supabase for data | Best combo of features and price | Free Beer Studio')}`)
+        return
+      }
+      const [decision, reasoning, domain] = pipeParts
+      const ok = runtime.writer.logDecision(decision, reasoning ?? '', domain ?? 'General')
+      if (ok) {
+        runtime.reloadContext()
+        console.log(`  ${pc.green('Decision logged')} to master-plan.md`)
+      } else {
+        console.log(`  ${pc.red('Failed to log decision')} (master-plan.md not found or table missing)`)
+      }
+      return
+    }
+
+    case '/note': {
+      // /note <text> — append to active domain's notes
+      if (!args) {
+        console.log(`  ${pc.dim('Usage: /note <text>')}`)
+        console.log(`  ${pc.dim('Appends a note to the active domain document. Set domain first with /domain.')}`)
+        return
+      }
+      if (!runtime.activeDomain) {
+        console.log(`  ${pc.yellow('No active domain.')} Use ${pc.cyan('/domain <name>')} first.`)
+        return
+      }
+      const ok = runtime.writer.appendDomainNote(runtime.activeDomain, args)
+      if (ok) {
+        runtime.reloadContext()
+        console.log(`  ${pc.green('Note added')} to ${runtime.activeDomain}.md`)
+      } else {
+        console.log(`  ${pc.red('Failed to add note')} (domain doc not found)`)
+      }
+      return
+    }
+
+    case '/gap': {
+      // /gap <capability> — log a capability gap
+      if (!args) {
+        console.log(`  ${pc.dim('Usage: /gap <capability needed>')}`)
+        console.log(`  ${pc.dim('Example: /gap Send emails via Gmail API')}`)
+        return
+      }
+      const ok = runtime.writer.logCapabilityGap(args)
+      if (ok) {
+        runtime.reloadContext()
+        console.log(`  ${pc.green('Capability gap logged')} to capabilities.md`)
+      } else {
+        console.log(`  ${pc.red('Failed to log gap')} (capabilities.md not found or table missing)`)
+      }
+      return
+    }
+
     case '/help': {
       console.log()
       console.log(`  ${pc.bold('Conversation')}:`)
@@ -234,6 +291,11 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
       console.log(`    ${pc.cyan('/domain <name>')}    Switch to a domain context`)
       console.log(`    ${pc.cyan('/domain')}           Clear domain (general context)`)
       console.log(`    ${pc.cyan('/domains')}          List all domains with isolation status`)
+      console.log()
+      console.log(`  ${pc.bold('Context Updates')}:`)
+      console.log(`    ${pc.cyan('/log')}              Log a decision ${pc.dim('(decision | reasoning | domain)')}`)
+      console.log(`    ${pc.cyan('/note')}             Add a note to active domain`)
+      console.log(`    ${pc.cyan('/gap')}              Log a capability gap`)
       console.log()
       console.log(`  ${pc.bold('System')}:`)
       console.log(`    ${pc.cyan('/context')}          Show loaded context info`)
