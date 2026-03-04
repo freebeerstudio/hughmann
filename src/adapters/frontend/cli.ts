@@ -29,6 +29,15 @@ export async function startChatLoop(runtime: Runtime, firstBoot: boolean = false
   }
   console.log()
 
+  // Start file watcher for auto-reload
+  runtime.startWatching((result) => {
+    console.log(`\n  ${pc.yellow('\u26a0')} ${pc.dim(`Context auto-reloaded: ${result.domainCount} domains, ${result.docCount} docs`)}`)
+    for (const w of result.warnings) {
+      console.log(`  ${pc.yellow('\u26a0')} ${pc.dim(w)}`)
+    }
+    prompt()
+  })
+
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -44,7 +53,8 @@ export async function startChatLoop(runtime: Runtime, firstBoot: boolean = false
   }
 
   rl.on('close', async () => {
-    // Distill on exit
+    // Clean up
+    runtime.stopWatching()
     await runtime.distillCurrent()
     console.log()
     console.log(`  ${DIM_COPPER(`${systemName} signing off.`)}`)
@@ -593,7 +603,7 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       console.log()
       console.log(`  ${pc.bold('System')}:`)
       console.log(`    ${pc.cyan('/context')}          Show loaded context info`)
-      console.log(`    ${pc.cyan('/reload')}           Re-read context documents from disk`)
+      console.log(`    ${pc.cyan('/reload')}           Re-read context documents from disk ${pc.dim('(also auto-reloads)')}`)
       console.log(`    ${pc.cyan('/help')}             Show this help`)
       console.log(`    ${pc.cyan('/exit')}             Distill and exit`)
       console.log()

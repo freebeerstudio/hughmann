@@ -12,6 +12,7 @@ import type { SupabaseAdapter } from '../adapters/data/supabase.js'
 import type { UsageTracker } from './usage.js'
 import { SubAgentManager } from './sub-agents.js'
 import type { SubAgent, SubAgentResult } from './sub-agents.js'
+import { ContextWatcher } from './watcher.js'
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000 // 2 hours
 const DISTILL_INTERVAL = 10 // every 10 turns (5 user + 5 assistant)
@@ -34,6 +35,7 @@ export class Runtime {
 
   private contextDir: string
   private turnsSinceDistill = 0
+  private watcher: ContextWatcher | null = null
 
   constructor(
     context: ContextStore,
@@ -424,6 +426,32 @@ export class Runtime {
       title: current.title,
       messageCount: current.messages.length,
     }
+  }
+
+  /**
+   * Start watching context directory for file changes.
+   * Automatically reloads context when .md files change.
+   * Returns a callback for notification (e.g. to print a message in CLI).
+   */
+  startWatching(onReload?: (result: { domainCount: number; docCount: number; warnings: string[] }) => void): void {
+    if (this.watcher) return
+
+    this.watcher = new ContextWatcher(this.contextDir)
+    this.watcher.start(() => {
+      const result = this.reloadContext()
+      onReload?.(result)
+    })
+  }
+
+  /** Stop watching context directory. */
+  stopWatching(): void {
+    this.watcher?.stop()
+    this.watcher = null
+  }
+
+  /** Check if file watcher is active. */
+  isWatching(): boolean {
+    return this.watcher?.isActive() ?? false
   }
 
   /** Fire-and-forget sync of current session to Supabase */
