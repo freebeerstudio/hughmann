@@ -8,6 +8,7 @@ import { Runtime } from './runtime.js'
 import { SessionManager } from './session.js'
 import { MemoryManager } from './memory.js'
 import { loadMcpConfig } from './mcp-config.js'
+import { SkillManager } from './skills.js'
 
 export interface BootResult {
   success: boolean
@@ -91,7 +92,15 @@ export function boot(): BootResult {
   const distillAdapter = adapters.find(a => a.id === 'claude-oauth') ?? adapters[0]
   memory.setModel(distillAdapter)
 
-  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers)
+  // Load skills
+  const skills = new SkillManager(HUGHMANN_HOME)
+  skills.initSkillsDir()
+  const customSkillCount = skills.listCustom().length
+  if (customSkillCount > 0) {
+    warnings.push(`Loaded ${customSkillCount} custom skill${customSkillCount !== 1 ? 's' : ''}`)
+  }
+
+  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers, skills)
 
   return { success: true, runtime, warnings, errors }
 }

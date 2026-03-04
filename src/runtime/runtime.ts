@@ -7,6 +7,7 @@ import { SessionManager } from './session.js'
 import type { SessionSummary } from './session.js'
 import { ContextWriter } from './context-writer.js'
 import { MemoryManager } from './memory.js'
+import { SkillManager } from './skills.js'
 
 const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000 // 2 hours
 const DISTILL_INTERVAL = 10 // every 10 turns (5 user + 5 assistant)
@@ -23,6 +24,7 @@ export class Runtime {
   activeDomain: string | null = null
   firstBoot = false
   mcpServers: Record<string, McpServerConfig>
+  skills: SkillManager
 
   private contextDir: string
   private turnsSinceDistill = 0
@@ -34,6 +36,7 @@ export class Runtime {
     sessions: SessionManager,
     memory: MemoryManager,
     mcpServers?: Record<string, McpServerConfig>,
+    skills?: SkillManager,
   ) {
     this.context = context
     this.router = router
@@ -42,6 +45,7 @@ export class Runtime {
     this.writer = new ContextWriter(contextDir)
     this.memory = memory
     this.mcpServers = mcpServers ?? {}
+    this.skills = skills ?? new SkillManager(contextDir.replace('/context', ''))
   }
 
   setDomain(slug: string | null): void {

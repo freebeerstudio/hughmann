@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline'
 import pc from 'picocolors'
 import type { Runtime } from '../../runtime/runtime.js'
+import type { Skill } from '../../runtime/skills.js'
 
 const GOLD = (text: string) => `\x1b[38;2;200;140;60m${text}\x1b[0m`
 const DIM_COPPER = (text: string) => `\x1b[38;2;120;80;30m${text}\x1b[0m`
@@ -451,6 +452,40 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       return
     }
 
+    case '/skills': {
+      const builtins = runtime.skills.listBuiltin()
+      const custom = runtime.skills.listCustom()
+
+      console.log()
+      console.log(`  ${pc.bold('Built-in Skills')}:`)
+      for (const s of builtins) {
+        const tier = s.complexity === 'autonomous'
+          ? pc.yellow('[opus+tools]')
+          : s.complexity === 'lightweight'
+            ? pc.dim('[haiku]')
+            : pc.blue('[sonnet]')
+        console.log(`    ${pc.cyan('/' + s.id)}${' '.repeat(Math.max(1, 18 - s.id.length))}${s.description} ${tier}`)
+      }
+
+      if (custom.length > 0) {
+        console.log()
+        console.log(`  ${pc.bold('Custom Skills')}:`)
+        for (const s of custom) {
+          const tier = s.complexity === 'autonomous'
+            ? pc.yellow('[opus+tools]')
+            : s.complexity === 'lightweight'
+              ? pc.dim('[haiku]')
+              : pc.blue('[sonnet]')
+          console.log(`    ${pc.cyan('/' + s.id)}${' '.repeat(Math.max(1, 18 - s.id.length))}${s.description} ${tier}`)
+        }
+      }
+
+      console.log()
+      console.log(`  ${pc.dim('Add custom skills to ~/.hughmann/skills/ as .md files.')}`)
+      console.log()
+      return
+    }
+
     case '/help': {
       console.log()
       console.log(`  ${pc.bold('Conversation')}:`)
@@ -461,6 +496,7 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       console.log()
       console.log(`  ${pc.bold('Autonomous')}:`)
       console.log(`    ${pc.cyan('/do <task>')}        Execute a task with tools ${pc.dim('(Opus + file/shell/web/MCP)')}`)
+      console.log(`    ${pc.cyan('/skills')}           List all available skills`)
       console.log(`    ${pc.cyan('/mcp')}              List configured MCP servers`)
       console.log()
       console.log(`  ${pc.bold('Memory')}:`)
@@ -492,8 +528,138 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
     }
 
     default: {
-      console.log(`  ${pc.dim(`Unknown command: ${command}. Type /help for available commands.`)}`)
+      // Check if command matches a skill
+      const skillId = command.slice(1) // remove leading /
+      const skill = runtime.skills.get(skillId)
+
+      if (skill) {
+        return await runSkill(skill, runtime, args)
+      }
+
+      console.log(`  ${pc.dim(`Unknown command: ${command}. Type /help or /skills for available commands.`)}`)
       return
     }
+  }
+}
+
+/**
+ * Execute a skill. Routes to the appropriate handler based on complexity tier.
+ * - autonomous: uses doTaskStream (opus + tools)
+ * - conversational: uses chatStream (sonnet)
+ * - lightweight: uses chatStream (routed to haiku via complexity)
+ */
+async function runSkill(skill: Skill, runtime: Runtime, extraArgs: string): Promise<void> {
+  const systemName = runtime.context.config.systemName
+
+  // Auto-switch domain if the skill specifies one
+  const previousDomain = runtime.activeDomain
+  if (skill.domain) {
+    try {
+      runtime.setDomain(skill.domain)
+    } catch {
+      // Domain doesn't exist, proceed without switching
+    }
+  }
+
+  // Build the prompt — skill prompt + any extra args the user passed
+  let prompt = skill.prompt
+  if (extraArgs) {
+    prompt += `\n\nAdditional context from user: ${extraArgs}`
+  }
+
+  console.log()
+  console.log(`  ${GOLD(systemName)} ${pc.dim('running skill:')} ${pc.bold(skill.name)}`)
+
+  if (skill.complexity === 'autonomous') {
+    // Autonomous: opus + tools via doTaskStream
+    console.log(`  ${pc.dim('Using Opus with tools. This may take a moment...')}`)
+    console.log()
+
+    try {
+      let hasText = false
+      let lastToolName: string | null = null
+
+      for await (const chunk of runtime.doTaskStream(prompt, {
+        maxTurns: skill.maxTurns,
+      })) {
+        switch (chunk.type) {
+          case 'tool_use': {
+            if (hasText) {
+              process.stdout.write('\n')
+              hasText = false
+            }
+            lastToolName = chunk.metadata?.toolName ?? null
+            console.log(`  ${pc.yellow(TOOL_ICON)} ${pc.dim(chunk.content)}`)
+            break
+          }
+          case 'tool_progress': break
+          case 'status': {
+            console.log(`  ${pc.green(CHECK_ICON)} ${pc.dim(chunk.content)}`)
+            break
+          }
+          case 'text': {
+            if (!hasText && lastToolName) {
+              console.log()
+              process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
+              lastToolName = null
+            } else if (!hasText) {
+              process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
+            }
+            process.stdout.write(chunk.content)
+            hasText = true
+            break
+          }
+          case 'error': {
+            console.error(pc.red(`\n  Error: ${chunk.content}`))
+            break
+          }
+          case 'done': {
+            if (hasText) process.stdout.write('\n')
+            const turns = chunk.metadata?.turnCount
+            const cost = chunk.metadata?.costUsd
+            const stats: string[] = []
+            if (turns) stats.push(`${turns} turns`)
+            if (cost !== undefined) stats.push(`$${cost.toFixed(4)}`)
+            if (stats.length > 0) {
+              console.log()
+              console.log(`  ${pc.dim(`Skill complete (${stats.join(', ')})`)}`)
+            }
+            break
+          }
+        }
+      }
+      console.log()
+    } catch (err) {
+      console.error(pc.red(`\n  Skill failed: ${err instanceof Error ? err.message : String(err)}`))
+      console.log()
+    }
+  } else {
+    // Conversational or lightweight: use chatStream
+    console.log()
+
+    try {
+      process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
+
+      let hasOutput = false
+      for await (const chunk of runtime.chatStream(prompt)) {
+        if (chunk.type === 'text') {
+          process.stdout.write(chunk.content)
+          hasOutput = true
+        } else if (chunk.type === 'error') {
+          console.error(pc.red(`\n  Error: ${chunk.content}`))
+        }
+      }
+
+      if (hasOutput) process.stdout.write('\n')
+      console.log()
+    } catch (err) {
+      console.error(pc.red(`\n  Skill failed: ${err instanceof Error ? err.message : String(err)}`))
+      console.log()
+    }
+  }
+
+  // Restore domain if we auto-switched
+  if (skill.domain && previousDomain !== runtime.activeDomain) {
+    runtime.setDomain(previousDomain)
   }
 }
