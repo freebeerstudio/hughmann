@@ -6,6 +6,7 @@ import { createModelAdapters } from '../adapters/model/index.js'
 import { ModelRouter } from './model-router.js'
 import { Runtime } from './runtime.js'
 import { SessionManager } from './session.js'
+import { MemoryManager } from './memory.js'
 
 export interface BootResult {
   success: boolean
@@ -70,10 +71,17 @@ export function boot(): BootResult {
     return { success: false, warnings, errors }
   }
 
-  // Create router, session manager, and runtime
+  // Create router, session manager, memory manager, and runtime
   const router = new ModelRouter(adapters)
   const sessions = new SessionManager(HUGHMANN_HOME)
-  const runtime = new Runtime(contextResult.store, router, contextDir, sessions)
+  const memory = new MemoryManager(HUGHMANN_HOME)
+
+  // Give memory manager a model adapter for distillation
+  // Prefer Claude OAuth (uses haiku tier), fall back to OpenRouter
+  const distillAdapter = adapters.find(a => a.id === 'claude-oauth') ?? adapters[0]
+  memory.setModel(distillAdapter)
+
+  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory)
 
   return { success: true, runtime, warnings, errors }
 }

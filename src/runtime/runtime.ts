@@ -6,6 +6,10 @@ import { reloadContext } from './context-loader.js'
 import { SessionManager } from './session.js'
 import type { SessionSummary } from './session.js'
 import { ContextWriter } from './context-writer.js'
+import { MemoryManager } from './memory.js'
+
+const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000 // 2 hours
+const DISTILL_INTERVAL = 10 // every 10 turns (5 user + 5 assistant)
 
 /**
  * The central runtime orchestrator. Holds state, handles turns, manages domain switching.
@@ -15,16 +19,25 @@ export class Runtime {
   router: ModelRouter
   sessions: SessionManager
   writer: ContextWriter
+  memory: MemoryManager
   activeDomain: string | null = null
 
   private contextDir: string
+  private turnsSinceDistill = 0
 
-  constructor(context: ContextStore, router: ModelRouter, contextDir: string, sessions: SessionManager) {
+  constructor(
+    context: ContextStore,
+    router: ModelRouter,
+    contextDir: string,
+    sessions: SessionManager,
+    memory: MemoryManager,
+  ) {
     this.context = context
     this.router = router
     this.contextDir = contextDir
     this.sessions = sessions
     this.writer = new ContextWriter(contextDir)
+    this.memory = memory
   }
 
   setDomain(slug: string | null): void {
@@ -34,7 +47,6 @@ export class Runtime {
       return
     }
     if (!this.context.domains.has(slug)) {
-      // Try to find by partial match
       const match = Array.from(this.context.domains.keys()).find(k =>
         k.includes(slug) || slug.includes(k)
       )
@@ -51,17 +63,13 @@ export class Runtime {
   }
 
   async chat(userMessage: string): Promise<string> {
-    const session = this.sessions.getOrCreate(this.activeDomain)
+    this.sessions.getOrCreate(this.activeDomain)
     const contextMessages = [
       ...this.sessions.getContextMessages(),
       { role: 'user' as const, content: userMessage },
     ]
 
-    const systemPrompt = buildSystemPrompt(this.context, {
-      activeDomain: this.activeDomain ?? undefined,
-      includeMasterPlan: true,
-      includeGrowth: false,
-    })
+    const systemPrompt = this.buildPrompt()
 
     const response = await this.router.route({
       messages: contextMessages,
@@ -69,22 +77,20 @@ export class Runtime {
     }, systemPrompt)
 
     this.sessions.addTurn(userMessage, response.content)
+    this.turnsSinceDistill += 2
+    await this.maybePeriodicDistill()
 
     return response.content
   }
 
   async *chatStream(userMessage: string): AsyncIterable<ModelStreamChunk> {
-    const session = this.sessions.getOrCreate(this.activeDomain)
+    this.sessions.getOrCreate(this.activeDomain)
     const contextMessages = [
       ...this.sessions.getContextMessages(),
       { role: 'user' as const, content: userMessage },
     ]
 
-    const systemPrompt = buildSystemPrompt(this.context, {
-      activeDomain: this.activeDomain ?? undefined,
-      includeMasterPlan: true,
-      includeGrowth: false,
-    })
+    const systemPrompt = this.buildPrompt()
 
     let fullResponse = ''
 
@@ -99,13 +105,101 @@ export class Runtime {
     }
 
     this.sessions.addTurn(userMessage, fullResponse)
+    this.turnsSinceDistill += 2
+    await this.maybePeriodicDistill()
+  }
+
+  /**
+   * Smart session initialization for boot.
+   * - If last session is < 2 hours old, resume it
+   * - If last session is stale, distill it and start fresh
+   * - If no sessions exist, start fresh
+   *
+   * Returns a description of what happened for the CLI to display.
+   */
+  async initSession(): Promise<{ action: 'resumed' | 'distilled' | 'new'; message: string }> {
+    const sessions = this.sessions.list()
+
+    if (sessions.length === 0) {
+      this.sessions.create(this.activeDomain)
+      return { action: 'new', message: 'New session started.' }
+    }
+
+    const latest = sessions[0]
+    const age = Date.now() - new Date(latest.updatedAt).getTime()
+
+    if (age < STALE_THRESHOLD_MS && latest.messageCount > 0) {
+      // Recent session — resume
+      this.sessions.load(latest.id)
+      this.activeDomain = this.sessions.getCurrent()?.domain ?? null
+      return {
+        action: 'resumed',
+        message: `Resumed: ${latest.title} (${latest.messageCount} messages)`,
+      }
+    }
+
+    // Stale session — distill if not already done, then start fresh
+    if (latest.messageCount > 0 && !this.memory.isDistilled(latest.id)) {
+      const session = this.sessions.load(latest.id)
+      if (session) {
+        const result = await this.memory.distill(session)
+        if (result) {
+          this.memory.markDistilled(latest.id)
+        }
+      }
+      this.sessions.create(this.activeDomain)
+      return {
+        action: 'distilled',
+        message: `Distilled previous session. New session started.`,
+      }
+    }
+
+    this.sessions.create(this.activeDomain)
+    return { action: 'new', message: 'New session started.' }
+  }
+
+  /** Distill the current session on demand */
+  async distillCurrent(): Promise<string | null> {
+    const session = this.sessions.getCurrent()
+    if (!session || session.messages.length < 2) return null
+
+    const result = await this.memory.distill(session)
+    if (result) {
+      this.memory.markDistilled(session.id)
+      this.turnsSinceDistill = 0
+    }
+    return result
+  }
+
+  /** Periodic distillation every N turns */
+  private async maybePeriodicDistill(): Promise<void> {
+    if (this.turnsSinceDistill < DISTILL_INTERVAL) return
+    await this.distillCurrent()
+  }
+
+  /** Build system prompt including recent memories */
+  private buildPrompt(): string {
+    const recentMemories = this.memory.getRecentMemories(3)
+
+    let prompt = buildSystemPrompt(this.context, {
+      activeDomain: this.activeDomain ?? undefined,
+      includeMasterPlan: true,
+      includeGrowth: false,
+    })
+
+    if (recentMemories) {
+      prompt += '\n\n---\n\n## Recent Memory\n\n' +
+        'Key facts and learnings from recent conversations:\n\n' +
+        recentMemories
+    }
+
+    return prompt
   }
 
   reloadContext(): { domainCount: number; docCount: number; warnings: string[] } {
     const { store, warnings } = reloadContext(this.contextDir)
     this.context = store
 
-    // Re-validate active domain
     if (this.activeDomain && !this.context.domains.has(this.activeDomain)) {
       this.activeDomain = null
       warnings.push(`Active domain no longer exists after reload`)
@@ -122,20 +216,28 @@ export class Runtime {
     return Array.from(this.context.domains.values())
   }
 
-  /** Clear history and start a fresh session */
-  clearHistory(): void {
+  /** Distill current session and start fresh */
+  async clearAndDistill(): Promise<string | null> {
+    const result = await this.distillCurrent()
     this.sessions.newSession(this.activeDomain)
+    this.turnsSinceDistill = 0
+    return result
   }
 
-  /** Resume a specific session by ID */
+  /** Clear history without distilling */
+  clearHistory(): void {
+    this.sessions.newSession(this.activeDomain)
+    this.turnsSinceDistill = 0
+  }
+
   resumeSession(id: string): boolean {
     const session = this.sessions.load(id)
     if (!session) return false
     this.activeDomain = session.domain
+    this.turnsSinceDistill = 0
     return true
   }
 
-  /** Resume the most recent session */
   resumeLatest(): boolean {
     const session = this.sessions.loadLatest()
     if (!session) return false
@@ -143,12 +245,10 @@ export class Runtime {
     return true
   }
 
-  /** List past sessions */
   listSessions(): SessionSummary[] {
     return this.sessions.list()
   }
 
-  /** Get current session info */
   getSessionInfo(): { id: string; title: string; messageCount: number } | null {
     const current = this.sessions.getCurrent()
     if (!current) return null

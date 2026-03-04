@@ -5,24 +5,19 @@ import type { Runtime } from '../../runtime/runtime.js'
 const GOLD = (text: string) => `\x1b[38;2;200;140;60m${text}\x1b[0m`
 const DIM_COPPER = (text: string) => `\x1b[38;2;120;80;30m${text}\x1b[0m`
 
-/**
- * readline-based CLI chat frontend.
- */
+// Store numbered session list for /resume by number
+let lastSessionList: { id: string }[] = []
+
 export async function startChatLoop(runtime: Runtime): Promise<void> {
   const systemName = runtime.context.config.systemName
   const ownerName = runtime.context.config.ownerName
 
-  // Resume latest session or start a new one
-  const resumed = runtime.resumeLatest()
-  const sessionInfo = runtime.getSessionInfo()
+  // Smart session init: resume if recent, distill + fresh if stale
+  const initResult = await runtime.initSession()
 
   console.log()
   console.log(`  ${GOLD(systemName)} is online. ${DIM_COPPER(`Type /help for commands.`)}`)
-  if (resumed && sessionInfo && sessionInfo.messageCount > 0) {
-    console.log(`  ${pc.dim(`Resumed session: ${sessionInfo.title} (${sessionInfo.messageCount} messages)`)}`)
-  } else {
-    console.log(`  ${pc.dim('New session started.')}`)
-  }
+  console.log(`  ${pc.dim(initResult.message)}`)
   console.log()
 
   const rl = createInterface({
@@ -39,7 +34,9 @@ export async function startChatLoop(runtime: Runtime): Promise<void> {
     rl.prompt()
   }
 
-  rl.on('close', () => {
+  rl.on('close', async () => {
+    // Distill on exit
+    await runtime.distillCurrent()
     console.log()
     console.log(`  ${DIM_COPPER(`${systemName} signing off.`)}`)
     console.log()
@@ -53,12 +50,19 @@ export async function startChatLoop(runtime: Runtime): Promise<void> {
       return
     }
 
-    // Handle slash commands
     if (trimmed.startsWith('/')) {
-      const handled = handleSlashCommand(trimmed, runtime)
+      const handled = await handleSlashCommand(trimmed, runtime)
       if (handled === 'exit') {
-        rl.close()
-        return
+        // Distill before exiting
+        const session = runtime.getSessionInfo()
+        if (session && session.messageCount > 0) {
+          console.log(`  ${pc.dim('Distilling session...')}`)
+          await runtime.distillCurrent()
+        }
+        console.log()
+        console.log(`  ${DIM_COPPER(`${runtime.context.config.systemName} signing off.`)}`)
+        console.log()
+        process.exit(0)
       }
       prompt()
       return
@@ -93,7 +97,7 @@ export async function startChatLoop(runtime: Runtime): Promise<void> {
   prompt()
 }
 
-function handleSlashCommand(input: string, runtime: Runtime): string | void {
+async function handleSlashCommand(input: string, runtime: Runtime): Promise<string | void> {
   const parts = input.split(/\s+/)
   const command = parts[0].toLowerCase()
   const args = parts.slice(1).join(' ').trim()
@@ -151,10 +155,8 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
       try {
         const result = runtime.reloadContext()
         console.log(`  ${pc.green('Context reloaded')} (${result.domainCount} domains, ${result.docCount} docs)`)
-        if (result.warnings.length > 0) {
-          for (const w of result.warnings) {
-            console.log(`  ${pc.yellow('Warning')}: ${w}`)
-          }
+        for (const w of result.warnings) {
+          console.log(`  ${pc.yellow('Warning')}: ${w}`)
         }
       } catch (err) {
         console.error(`  ${pc.red('Reload failed')}: ${err instanceof Error ? err.message : String(err)}`)
@@ -163,8 +165,15 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
     }
 
     case '/new': {
-      runtime.clearHistory()
-      console.log(`  ${pc.green('New session started.')}`)
+      const session = runtime.getSessionInfo()
+      if (session && session.messageCount > 0) {
+        console.log(`  ${pc.dim('Distilling current session...')}`)
+        await runtime.clearAndDistill()
+        console.log(`  ${pc.green('Session distilled. New session started.')}`)
+      } else {
+        runtime.clearHistory()
+        console.log(`  ${pc.green('New session started.')}`)
+      }
       return
     }
 
@@ -176,37 +185,57 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
       }
       console.log()
       const current = runtime.getSessionInfo()
-      for (const s of sessions.slice(0, 10)) {
+      lastSessionList = sessions.slice(0, 10)
+      for (let i = 0; i < lastSessionList.length; i++) {
+        const s = sessions[i]
+        const num = pc.bold(`${i + 1}.`)
         const active = current && s.id === current.id ? pc.green(' \u2190 active') : ''
         const domain = s.domain ? pc.dim(` [${s.domain}]`) : ''
         const date = new Date(s.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
         const msgs = pc.dim(`${s.messageCount} msgs`)
-        console.log(`  ${pc.bold(s.title)}${domain} ${pc.dim('\u2014')} ${date}, ${msgs}${active}`)
-        console.log(`  ${pc.dim(s.id)}`)
+        console.log(`  ${num} ${pc.bold(s.title)}${domain} ${pc.dim('\u2014')} ${date}, ${msgs}${active}`)
       }
       if (sessions.length > 10) {
         console.log(`  ${pc.dim(`...and ${sessions.length - 10} more`)}`)
       }
       console.log()
-      console.log(`  ${pc.dim('Use /resume <id> to switch sessions')}`)
+      console.log(`  ${pc.dim('Use /resume <number> to switch sessions')}`)
       console.log()
       return
     }
 
     case '/resume': {
       if (!args) {
-        console.log(`  ${pc.dim('Usage: /resume <session-id>')}`)
+        console.log(`  ${pc.dim('Usage: /resume <number> or /resume <session-id>')}`)
         console.log(`  ${pc.dim('Use /sessions to see available sessions')}`)
         return
       }
-      // Support partial ID matching
-      const sessions = runtime.listSessions()
-      const match = sessions.find(s => s.id === args || s.id.startsWith(args))
-      if (!match) {
+
+      // Support numbered resume from /sessions list
+      const num = parseInt(args, 10)
+      let targetId: string | undefined
+
+      if (!isNaN(num) && num >= 1 && num <= lastSessionList.length) {
+        targetId = lastSessionList[num - 1].id
+      } else {
+        // Partial ID match
+        const sessions = runtime.listSessions()
+        const match = sessions.find(s => s.id === args || s.id.startsWith(args))
+        targetId = match?.id
+      }
+
+      if (!targetId) {
         console.log(`  ${pc.red('No session found matching:')} ${args}`)
         return
       }
-      const success = runtime.resumeSession(match.id)
+
+      // Distill current session before switching
+      const currentSession = runtime.getSessionInfo()
+      if (currentSession && currentSession.messageCount > 0 && currentSession.id !== targetId) {
+        await runtime.distillCurrent()
+      }
+
+      const success = runtime.resumeSession(targetId)
       if (success) {
         const info = runtime.getSessionInfo()
         console.log(`  ${pc.green('Resumed')}: ${info?.title} (${info?.messageCount} messages)`)
@@ -216,14 +245,40 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
       return
     }
 
+    case '/distill': {
+      const session = runtime.getSessionInfo()
+      if (!session || session.messageCount < 2) {
+        console.log(`  ${pc.dim('Nothing to distill (session is empty or too short).')}`)
+        return
+      }
+      console.log(`  ${pc.dim('Distilling...')}`)
+      const result = await runtime.distillCurrent()
+      if (result) {
+        console.log(`  ${pc.green('Memory saved.')}`)
+      } else {
+        console.log(`  ${pc.yellow('Distillation produced no output.')}`)
+      }
+      return
+    }
+
+    case '/memory': {
+      const memories = runtime.memory.getRecentMemories(3)
+      if (!memories) {
+        console.log(`  ${pc.dim('No memories yet. Memories are created when sessions are distilled.')}`)
+      } else {
+        console.log()
+        console.log(memories)
+      }
+      return
+    }
+
     case '/clear': {
       runtime.clearHistory()
-      console.log(`  ${pc.green('New session started.')}`)
+      console.log(`  ${pc.green('New session started.')} ${pc.dim('(Previous session not distilled. Use /new to distill first.)')}`)
       return
     }
 
     case '/log': {
-      // /log <decision> | <reasoning> | <domain>
       const pipeParts = args.split('|').map(s => s.trim())
       if (pipeParts.length < 2) {
         console.log(`  ${pc.dim('Usage: /log <decision> | <reasoning> | <domain>')}`)
@@ -242,7 +297,6 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
     }
 
     case '/note': {
-      // /note <text> — append to active domain's notes
       if (!args) {
         console.log(`  ${pc.dim('Usage: /note <text>')}`)
         console.log(`  ${pc.dim('Appends a note to the active domain document. Set domain first with /domain.')}`)
@@ -263,7 +317,6 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
     }
 
     case '/gap': {
-      // /gap <capability> — log a capability gap
       if (!args) {
         console.log(`  ${pc.dim('Usage: /gap <capability needed>')}`)
         console.log(`  ${pc.dim('Example: /gap Send emails via Gmail API')}`)
@@ -282,10 +335,14 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
     case '/help': {
       console.log()
       console.log(`  ${pc.bold('Conversation')}:`)
-      console.log(`    ${pc.cyan('/new')}              Start a new session`)
-      console.log(`    ${pc.cyan('/sessions')}         List past sessions`)
-      console.log(`    ${pc.cyan('/resume <id>')}      Resume a previous session`)
-      console.log(`    ${pc.cyan('/clear')}            Start a new session (alias for /new)`)
+      console.log(`    ${pc.cyan('/new')}              Distill current session and start fresh`)
+      console.log(`    ${pc.cyan('/sessions')}         List past sessions (numbered)`)
+      console.log(`    ${pc.cyan('/resume <#>')}       Resume a session by number or ID`)
+      console.log(`    ${pc.cyan('/clear')}            Start fresh without distilling`)
+      console.log()
+      console.log(`  ${pc.bold('Memory')}:`)
+      console.log(`    ${pc.cyan('/distill')}          Extract learnings from current session`)
+      console.log(`    ${pc.cyan('/memory')}           Show recent memories (last 3 days)`)
       console.log()
       console.log(`  ${pc.bold('Domains')}:`)
       console.log(`    ${pc.cyan('/domain <name>')}    Switch to a domain context`)
@@ -301,7 +358,7 @@ function handleSlashCommand(input: string, runtime: Runtime): string | void {
       console.log(`    ${pc.cyan('/context')}          Show loaded context info`)
       console.log(`    ${pc.cyan('/reload')}           Re-read context documents from disk`)
       console.log(`    ${pc.cyan('/help')}             Show this help`)
-      console.log(`    ${pc.cyan('/exit')}             Exit`)
+      console.log(`    ${pc.cyan('/exit')}             Distill and exit`)
       console.log()
       return
     }
