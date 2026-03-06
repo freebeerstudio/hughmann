@@ -12,6 +12,7 @@ export interface UserIdentity {
   timezone: string
   peakHours: string
   communicationStyle: string
+  habits?: string
 }
 
 export interface LifeDomain {

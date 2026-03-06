@@ -57,7 +57,7 @@ export function resetDailyIfNeeded(stats: DaemonStats): void {
 export function canExecuteTask(stats: DaemonStats, config: GuardrailConfig): { allowed: boolean; reason?: string } {
   resetDailyIfNeeded(stats)
 
-  // Business hours check (uses local machine time — CST on Wayne's Mac)
+  // Business hours check (uses local machine time)
   const now = new Date()
   const hour = now.getHours()
   if (hour < config.businessHoursStart || hour >= config.businessHoursEnd) {

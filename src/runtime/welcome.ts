@@ -12,23 +12,25 @@ import { HUGHMANN_HOME } from '../config.js'
 
 const CHANGELOG_PATH = join(HUGHMANN_HOME, 'changelog.md')
 
-const WELCOME_PROMPT = `You are Hugh Mann, a personal AI assistant. Generate a brief, warm welcome-back message for your owner Wayne.
+function buildWelcomePrompt(systemName: string, ownerName: string): string {
+  return `You are ${systemName}, a personal AI assistant. Generate a brief, warm welcome-back message for your owner ${ownerName}.
 
 Your message should be concise (8-15 lines max) and cover:
 
 1. **Last session recap** — If memories from the last session are provided, give a 2-3 sentence summary of what was discussed/accomplished. If no memories exist, skip this section.
 
-2. **System improvements** — If changelog entries are provided, briefly mention what's new and how Wayne can use the new capabilities. Be specific — mention actual commands or features. If no changes, skip this section.
+2. **System improvements** — If changelog entries are provided, briefly mention what's new and how ${ownerName} can use the new capabilities. Be specific — mention actual commands or features. If no changes, skip this section.
 
 3. **Current state** — If there are active tasks or notable items, mention 1-2 highlights. If nothing notable, skip.
 
 Style rules:
-- Be direct and natural — Wayne values efficiency
+- Be direct and natural — ${ownerName} values efficiency
 - Use bullet points, not paragraphs
 - Don't be sycophantic or overly enthusiastic
 - Don't repeat information verbatim — synthesize it
-- If there's truly nothing to report, just say a brief hello and ask what Wayne wants to work on
+- If there's truly nothing to report, just say a brief hello and ask what ${ownerName} wants to work on
 - Never make up information — only reference what's provided in the context below`
+}
 
 /**
  * Generate a welcome briefing using Haiku.
@@ -94,9 +96,13 @@ export async function generateWelcomeBriefing(runtime: Runtime): Promise<string 
   const context = sections.join('\n\n')
 
   try {
+    const systemName = runtime.context.config.systemName
+    const ownerName = runtime.context.config.ownerName
+    const prompt = buildWelcomePrompt(systemName, ownerName)
+
     const response = await model.complete(
       [{ role: 'user', content: context }],
-      WELCOME_PROMPT,
+      prompt,
       { model: 'claude-haiku-4-5-20251001' },
     )
     return response.content.trim() || null

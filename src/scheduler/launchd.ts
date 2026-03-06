@@ -5,7 +5,8 @@ import { execSync } from 'node:child_process'
 
 const PLIST_PREFIX = 'com.hughmann.skill'
 const LAUNCH_AGENTS_DIR = join(homedir(), 'Library', 'LaunchAgents')
-const LOG_DIR = join(homedir(), '.hughmann', 'logs')
+const HUGHMANN_HOME = join(homedir(), '.hughmann')
+const LOG_DIR = join(HUGHMANN_HOME, 'logs')
 
 export interface ScheduleEntry {
   skillId: string
@@ -17,14 +18,61 @@ export interface ScheduleEntry {
   loaded: boolean
 }
 
+/** Parse active hours string like "7am-6pm" into { start, end } in 24h format */
+function parseActiveHours(activeHours: string): { start: number; end: number } | null {
+  const match = activeHours.match(/(\d{1,2})(am|pm)?\s*-\s*(\d{1,2})(am|pm)?/i)
+  if (!match) return null
+  let startHour = parseInt(match[1])
+  const startAmPm = (match[2] || '').toLowerCase()
+  let endHour = parseInt(match[3])
+  const endAmPm = (match[4] || '').toLowerCase()
+  if (startAmPm === 'pm' && startHour < 12) startHour += 12
+  if (startAmPm === 'am' && startHour === 12) startHour = 0
+  if (endAmPm === 'pm' && endHour < 12) endHour += 12
+  if (endAmPm === 'am' && endHour === 12) endHour = 0
+  return { start: startHour, end: endHour }
+}
+
 /**
- * Default schedules tuned to Wayne's routines.
+ * Default schedules — customizable via schedule.json or onboarding config.
  */
-export const DEFAULT_SCHEDULES: { skillId: string; hour: number; minute: number; weekday?: number; description: string }[] = [
-  { skillId: 'morning', hour: 7, minute: 0, description: 'Morning dashboard at 7:00 AM' },
-  { skillId: 'closeout', hour: 16, minute: 0, description: 'Afternoon closeout at 4:00 PM' },
-  { skillId: 'review', hour: 9, minute: 0, weekday: 5, description: 'Weekly review on Fridays at 9:00 AM' },
-]
+export function getDefaultSchedules(): { skillId: string; hour: number; minute: number; weekday?: number; description: string }[] {
+  try {
+    const configPath = join(HUGHMANN_HOME, '.onboarding-data.json')
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+      const activeHours = config.autonomy?.activeHours
+      if (activeHours) {
+        const hours = parseActiveHours(activeHours)
+        if (hours) {
+          const reviewHour = Math.min(hours.start + 2, hours.end - 1)
+          return [
+            { skillId: 'morning', hour: hours.start, minute: 0, description: `Morning dashboard at ${formatHour(hours.start)}` },
+            { skillId: 'closeout', hour: hours.end, minute: 0, description: `Afternoon closeout at ${formatHour(hours.end)}` },
+            { skillId: 'review', hour: reviewHour, minute: 0, weekday: 5, description: `Weekly review on Fridays at ${formatHour(reviewHour)}` },
+          ]
+        }
+      }
+    }
+  } catch {
+    // Fall through to defaults
+  }
+
+  return [
+    { skillId: 'morning', hour: 7, minute: 0, description: 'Morning dashboard at 7:00 AM' },
+    { skillId: 'closeout', hour: 16, minute: 0, description: 'Afternoon closeout at 4:00 PM' },
+    { skillId: 'review', hour: 9, minute: 0, weekday: 5, description: 'Weekly review on Fridays at 9:00 AM' },
+  ]
+}
+
+function formatHour(hour: number): string {
+  const h = hour % 12 || 12
+  const ampm = hour < 12 ? 'AM' : 'PM'
+  return `${h}:00 ${ampm}`
+}
+
+/** @deprecated Use getDefaultSchedules() instead */
+export const DEFAULT_SCHEDULES = getDefaultSchedules()
 
 /**
  * Generate the launchd plist XML for a scheduled skill.

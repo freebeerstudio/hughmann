@@ -98,11 +98,19 @@ export async function collectUserIdentity(systemName: string, existing?: UserIde
   })
   if (p.isCancel(communicationStyle)) return communicationStyle
 
+  const habits = await p.text({
+    message: 'What daily habits do you want to track? (comma-separated, or leave blank for defaults)',
+    placeholder: 'e.g., exercise, reading, meditation, inbox zero, learning',
+    defaultValue: existing?.habits,
+  })
+  if (p.isCancel(habits)) return habits
+
   return {
     name: String(name),
     description: String(description),
     timezone,
     peakHours: String(peakHours),
     communicationStyle: String(communicationStyle),
+    habits: String(habits).trim() || undefined,
   }
 }

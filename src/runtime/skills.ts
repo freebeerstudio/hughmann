@@ -154,7 +154,7 @@ Focus on actionable, executable tasks — not vague goals. Each task should be c
     name: 'Strategic Planning Session',
     description: '15-minute collaborative planning — break down goals into projects and tasks',
     builtin: true,
-    prompt: `You are leading a 15-minute strategic planning session with Wayne. You drive the conversation — propose, don't wait. Your job is to help Wayne translate goals into concrete projects and actionable tasks.
+    prompt: `You are leading a 15-minute strategic planning session with {{OWNER}}. You drive the conversation — propose, don't wait. Your job is to help {{OWNER}} translate goals into concrete projects and actionable tasks.
 
 ## Playbook
 
@@ -170,16 +170,16 @@ Focus on actionable, executable tasks — not vague goals. Each task should be c
 - Briefly summarize what was decided last time
 
 ### 3. Strategic Focus (5-7 min)
-Ask Wayne what needs attention. Then:
-- **For new initiatives**: Define as a project. Propose name, goals, milestones. Get Wayne's approval, then call \`create_project\` to create it.
+Ask {{OWNER}} what needs attention. Then:
+- **For new initiatives**: Define as a project. Propose name, goals, milestones. Get {{OWNER}}'s approval, then call \`create_project\` to create it.
 - **For existing projects**: Review progress, check milestone status, identify what's blocking progress. Break the next milestone into tasks.
-- **For course corrections**: Help Wayne decide, articulate the decision clearly, and log it.
+- **For course corrections**: Help {{OWNER}} decide, articulate the decision clearly, and log it.
 
 ### 4. Task Breakdown (5 min)
 - Propose 3-5 specific, actionable tasks based on the discussion
 - Each task should be completable in one work session
 - Assign appropriate type (MUST/MIT/BIG_ROCK/STANDARD), priority, and domain
-- Get Wayne's approval, then call \`create_task\` for each one
+- Get {{OWNER}}'s approval, then call \`create_task\` for each one
 - Link tasks to projects using \`project_id\` when applicable
 
 ### 5. Capture & Close (2 min)
@@ -198,33 +198,38 @@ Ask Wayne what needs attention. Then:
 - Reference previous sessions for continuity
 - Always capture decisions — nothing discussed should be lost
 - Keep it to 3-4 topics max per session — depth over breadth
-- If Wayne mentions something aspirational, help break it into a project with milestones
-- Be direct, concise, and action-oriented — Wayne values efficiency`,
+- If {{OWNER}} mentions something aspirational, help break it into a project with milestones
+- Be direct, concise, and action-oriented — {{OWNER}} values efficiency`,
   },
   {
     id: 'habits',
     name: 'Habit Check',
     description: 'Review daily habit completion',
     builtin: true,
-    prompt: `Check in on my 7 core habits for today:
-1. Walk
-2. Workout
-3. Meditation
-4. Inbox Zero
-5. Reading
-6. Calorie Deficit
-7. System Updates
+    prompt: `Check in on my daily habits for today:
+
+{{HABITS}}
 
 Ask me about each one. For any I haven't done yet, give me a quick nudge or suggestion.
-After I report, give me a score (X/7) and one sentence of encouragement or accountability.`,
+After I report, give me a score and one sentence of encouragement or accountability.`,
   },
 ]
 
 // ─── Skill Manager ──────────────────────────────────────────────────────────
 
+const DEFAULT_HABITS = `1. Exercise
+2. Reading
+3. Hydration
+4. Inbox Zero
+5. Learning
+6. Sleep Routine
+7. Reflection`
+
 export class SkillManager {
   private skills: Map<string, Skill> = new Map()
   private skillsDir: string
+  private ownerName: string = 'Owner'
+  private habits: string = DEFAULT_HABITS
 
   constructor(hughmannHome: string) {
     this.skillsDir = join(hughmannHome, 'skills')
@@ -236,10 +241,33 @@ export class SkillManager {
 
     // Load user-defined skills
     this.loadUserSkills()
+
+    // Try to load habits from context
+    const habitsPath = join(hughmannHome, 'context', 'habits.md')
+    if (existsSync(habitsPath)) {
+      const content = readFileSync(habitsPath, 'utf-8').trim()
+      if (content) this.habits = content
+    }
+  }
+
+  /** Set runtime interpolation values (called after context is loaded) */
+  setInterpolationContext(ownerName: string): void {
+    this.ownerName = ownerName
   }
 
   get(id: string): Skill | undefined {
-    return this.skills.get(id)
+    const skill = this.skills.get(id)
+    if (!skill) return undefined
+    // Lazily interpolate placeholders in built-in skill prompts
+    if (skill.builtin && (skill.prompt.includes('{{OWNER}}') || skill.prompt.includes('{{HABITS}}'))) {
+      return {
+        ...skill,
+        prompt: skill.prompt
+          .replace(/\{\{OWNER\}\}/g, this.ownerName)
+          .replace(/\{\{HABITS\}\}/g, this.habits),
+      }
+    }
+    return skill
   }
 
   list(): Skill[] {

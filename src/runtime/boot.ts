@@ -110,6 +110,7 @@ export async function boot(): Promise<BootResult> {
   // Load skills
   const skills = new SkillManager(HUGHMANN_HOME)
   skills.initSkillsDir()
+  skills.setInterpolationContext(contextResult.store.config.ownerName)
   const customSkillCount = skills.listCustom().length
   if (customSkillCount > 0) {
     warnings.push(`Loaded ${customSkillCount} custom skill${customSkillCount !== 1 ? 's' : ''}`)

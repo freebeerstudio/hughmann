@@ -49,15 +49,16 @@ export function buildSystemPrompt(context: ContextStore, options?: PromptOptions
 
   // 3b. Tools section — when Hugh has internal tools available
   if (hasTools) {
+    const owner = context.config.ownerName
     sections.push(`## Your Tools
 
 You have access to internal tools for managing tasks, projects, and time. Use them proactively:
 
-- **list_tasks** / **create_task** / **update_task** / **complete_task** — Manage tasks without being asked. If Wayne mentions needing to do something, create a task.
+- **list_tasks** / **create_task** / **update_task** / **complete_task** — Manage tasks without being asked. If ${owner} mentions needing to do something, create a task.
 - **list_projects** / **create_project** / **update_project** — Track projects across domains.
 - **get_current_time** — Check the time to provide time-aware responses.
 
-Be proactive: if Wayne mentions something he needs to do, offer to create a task. If he asks about progress, check his tasks. Don't wait to be told to use your tools.`)
+Be proactive: if ${owner} mentions something they need to do, offer to create a task. If they ask about progress, check their tasks. Don't wait to be told to use your tools.`)
   }
 
   // 4. Domain context — conditionally based on isolation

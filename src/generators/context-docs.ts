@@ -346,6 +346,26 @@ more useful every day by understanding the world better.
 `
 }
 
+const DEFAULT_HABITS = [
+  'Exercise',
+  'Reading',
+  'Hydration',
+  'Inbox Zero',
+  'Learning',
+  'Sleep Routine',
+  'Reflection',
+]
+
+function generateHabits(result: OnboardingResult): string {
+  if (result.user.habits) {
+    const items = result.user.habits.split(',').map(h => h.trim()).filter(Boolean)
+    if (items.length > 0) {
+      return items.map((h, i) => `${i + 1}. ${h}`).join('\n')
+    }
+  }
+  return DEFAULT_HABITS.map((h, i) => `${i + 1}. ${h}`).join('\n')
+}
+
 export function generateContextDocuments(result: OnboardingResult, outputDir: string): string[] {
   const domainsDir = join(outputDir, 'domains')
 
@@ -353,6 +373,11 @@ export function generateContextDocuments(result: OnboardingResult, outputDir: st
   mkdirSync(domainsDir, { recursive: true })
 
   const files: string[] = []
+
+  // Habits
+  const habitsPath = join(outputDir, 'habits.md')
+  writeFileSync(habitsPath, generateHabits(result), 'utf-8')
+  files.push(habitsPath)
 
   // Soul
   const soulPath = join(outputDir, 'soul.md')

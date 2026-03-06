@@ -392,12 +392,8 @@ async function executeSkill(runtime: Runtime, skillId: string): Promise<void> {
 function loadSchedule(): ScheduleRule[] {
   const path = join(DAEMON_DIR, 'schedule.json')
   if (!existsSync(path)) {
-    // Create default schedule
-    const defaults: ScheduleRule[] = [
-      { skillId: 'morning', hour: 7, minute: 0 },
-      { skillId: 'closeout', hour: 16, minute: 0 },
-      { skillId: 'review', hour: 9, minute: 0, weekday: 5 }, // Friday
-    ]
+    // Derive defaults from config's active hours if available
+    const defaults = deriveDefaultSchedule()
     writeFileSync(path, JSON.stringify(defaults, null, 2), 'utf-8')
     return defaults
   }
@@ -407,6 +403,50 @@ function loadSchedule(): ScheduleRule[] {
   } catch {
     return []
   }
+}
+
+/** Parse active hours string like "7am-6pm" into { start, end } in 24h format */
+function parseActiveHours(activeHours: string): { start: number; end: number } | null {
+  const match = activeHours.match(/(\d{1,2})(am|pm)?\s*-\s*(\d{1,2})(am|pm)?/i)
+  if (!match) return null
+  let startHour = parseInt(match[1])
+  const startAmPm = (match[2] || '').toLowerCase()
+  let endHour = parseInt(match[3])
+  const endAmPm = (match[4] || '').toLowerCase()
+  if (startAmPm === 'pm' && startHour < 12) startHour += 12
+  if (startAmPm === 'am' && startHour === 12) startHour = 0
+  if (endAmPm === 'pm' && endHour < 12) endHour += 12
+  if (endAmPm === 'am' && endHour === 12) endHour = 0
+  return { start: startHour, end: endHour }
+}
+
+/** Derive schedule times from onboarding config's activeHours (e.g. "7am-6pm") */
+function deriveDefaultSchedule(): ScheduleRule[] {
+  try {
+    const configPath = join(HUGHMANN_HOME, '.onboarding-data.json')
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf-8'))
+      const activeHours = config.autonomy?.activeHours
+      if (activeHours) {
+        const hours = parseActiveHours(activeHours)
+        if (hours) {
+          return [
+            { skillId: 'morning', hour: hours.start, minute: 0 },
+            { skillId: 'closeout', hour: hours.end, minute: 0 },
+            { skillId: 'review', hour: Math.min(hours.start + 2, hours.end - 1), minute: 0, weekday: 5 },
+          ]
+        }
+      }
+    }
+  } catch {
+    // Fall through to defaults
+  }
+
+  return [
+    { skillId: 'morning', hour: 7, minute: 0 },
+    { skillId: 'closeout', hour: 16, minute: 0 },
+    { skillId: 'review', hour: 9, minute: 0, weekday: 5 },
+  ]
 }
 
 function log(message: string): void {
