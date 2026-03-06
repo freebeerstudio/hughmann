@@ -166,4 +166,27 @@ export interface DataAdapter {
   savePlanningSession(record: Omit<PlanningSessionRecord, 'id' | 'created_at'>): Promise<string>
   getRecentPlanningSessions(limit?: number): Promise<PlanningSessionRecord[]>
   getLatestPlanningSession(): Promise<PlanningSessionRecord | null>
+
+  // ─── Feedback ─────────────────────────────────────────────────────────
+
+  saveFeedback(entry: {
+    category: string
+    signal: 'positive' | 'negative' | 'correction'
+    content: string
+    context?: string
+    domain?: string
+  }): Promise<void>
+
+  getFeedbackPatterns(options?: {
+    domain?: string
+    category?: string
+    limit?: number
+    since?: string
+  }): Promise<{
+    category: string
+    signal: string
+    content: string
+    domain: string | null
+    created_at: string
+  }[]>
 }

@@ -116,6 +116,20 @@ CREATE TABLE IF NOT EXISTS planning_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_planning_sessions_created ON planning_sessions (created_at DESC);
 
+CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT NOT NULL,
+  signal TEXT NOT NULL CHECK (signal IN ('positive', 'negative', 'correction')),
+  content TEXT NOT NULL,
+  context TEXT,
+  domain TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback (category);
+CREATE INDEX IF NOT EXISTS idx_feedback_signal ON feedback (signal);
+CREATE INDEX IF NOT EXISTS idx_feedback_domain ON feedback (domain);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback (created_at DESC);
+
 CREATE TABLE IF NOT EXISTS kb_nodes (
   id TEXT PRIMARY KEY,
   vault TEXT NOT NULL,
@@ -865,6 +879,70 @@ export class SQLiteAdapter implements DataAdapter {
     `).get() as Record<string, unknown> | undefined
 
     return row ? parseSqlitePlanningSession(row) : null
+  }
+
+  // ─── Feedback ───────────────────────────────────────────────────────────
+
+  async saveFeedback(entry: {
+    category: string
+    signal: 'positive' | 'negative' | 'correction'
+    content: string
+    context?: string
+    domain?: string
+  }): Promise<void> {
+    if (!this.ready) return
+
+    this.db.prepare(`
+      INSERT INTO feedback (category, signal, content, context, domain)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(entry.category, entry.signal, entry.content, entry.context ?? null, entry.domain ?? null)
+  }
+
+  async getFeedbackPatterns(options?: {
+    domain?: string
+    category?: string
+    limit?: number
+    since?: string
+  }): Promise<{
+    category: string
+    signal: string
+    content: string
+    domain: string | null
+    created_at: string
+  }[]> {
+    if (!this.ready) return []
+
+    const conditions: string[] = []
+    const params: unknown[] = []
+
+    if (options?.domain) {
+      conditions.push('domain = ?')
+      params.push(options.domain)
+    }
+    if (options?.category) {
+      conditions.push('category = ?')
+      params.push(options.category)
+    }
+    if (options?.since) {
+      conditions.push('created_at >= ?')
+      params.push(options.since)
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const limit = options?.limit ?? 50
+
+    return this.db.prepare(`
+      SELECT category, signal, content, domain, created_at
+      FROM feedback ${where}
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(...params, limit) as {
+      category: string
+      signal: string
+      content: string
+      domain: string | null
+      created_at: string
+    }[]
   }
 }
 

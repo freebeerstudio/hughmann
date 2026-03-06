@@ -829,6 +829,55 @@ export class TursoAdapter implements DataAdapter {
     if (result.rows.length === 0) return null
     return parseTursoPlanningSession(result.rows[0])
   }
+
+  // ─── Feedback ───────────────────────────────────────────────────────────
+
+  async saveFeedback(entry: {
+    category: string
+    signal: 'positive' | 'negative' | 'correction'
+    content: string
+    context?: string
+    domain?: string
+  }): Promise<void> {
+    if (!this.ready) return
+    await this.client.execute({
+      sql: 'INSERT INTO feedback (category, signal, content, context, domain) VALUES (?, ?, ?, ?, ?)',
+      args: [entry.category, entry.signal, entry.content, entry.context ?? null, entry.domain ?? null],
+    })
+  }
+
+  async getFeedbackPatterns(options?: {
+    domain?: string
+    category?: string
+    limit?: number
+    since?: string
+  }): Promise<{
+    category: string
+    signal: string
+    content: string
+    domain: string | null
+    created_at: string
+  }[]> {
+    if (!this.ready) return []
+    const conditions: string[] = []
+    const args: (string | number)[] = []
+    if (options?.domain) { conditions.push('domain = ?'); args.push(options.domain) }
+    if (options?.category) { conditions.push('category = ?'); args.push(options.category) }
+    if (options?.since) { conditions.push('created_at >= ?'); args.push(options.since) }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const limit = options?.limit ?? 50
+    const result = await this.client.execute({
+      sql: `SELECT category, signal, content, domain, created_at FROM feedback ${where} ORDER BY created_at DESC LIMIT ?`,
+      args: [...args, limit],
+    })
+    return result.rows.map(r => ({
+      category: String(r.category),
+      signal: String(r.signal),
+      content: String(r.content),
+      domain: r.domain ? String(r.domain) : null,
+      created_at: String(r.created_at),
+    }))
+  }
 }
 
 function parseTursoProject(row: Record<string, unknown>): Project {

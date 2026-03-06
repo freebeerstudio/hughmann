@@ -644,9 +644,113 @@ export function createInternalToolServer(
     }
   )
 
+  // ─── Feedback Tools ────────────────────────────────────────────────────
+
+  const recordFeedback = tool(
+    'record_feedback',
+    'Record user feedback on a suggestion, task output, or skill result. Use this when the user explicitly approves, rejects, or corrects something Hugh said or did.',
+    {
+      category: z.string().describe('Category: task, suggestion, skill, memory, planning'),
+      signal: z.string().describe('Signal: positive (accepted/liked), negative (rejected/disliked), correction (user fixed something)'),
+      content: z.string().describe('What was the feedback about — summarize the item that received feedback'),
+      context: z.string().optional().describe('Additional context about what happened'),
+      domain: z.string().optional().describe('Domain slug if relevant'),
+    },
+    async (args) => {
+      try {
+        await data.saveFeedback({
+          category: args.category,
+          signal: args.signal as 'positive' | 'negative' | 'correction',
+          content: args.content,
+          context: args.context,
+          domain: args.domain,
+        })
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Feedback recorded: ${args.signal} on ${args.category}`,
+          }],
+        }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const getFeedbackSummary = tool(
+    'get_feedback_summary',
+    'Get a summary of recent feedback patterns to understand what is working well and what needs improvement.',
+    {
+      domain: z.string().optional().describe('Filter by domain'),
+      category: z.string().optional().describe('Filter by category'),
+      days: z.number().optional().describe('Look back this many days (default: 30)'),
+    },
+    async (args) => {
+      try {
+        const since = new Date()
+        since.setDate(since.getDate() - (args.days ?? 30))
+
+        const feedback = await data.getFeedbackPatterns({
+          domain: args.domain,
+          category: args.category,
+          since: since.toISOString(),
+          limit: 100,
+        })
+
+        if (feedback.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'No feedback recorded yet.',
+            }],
+          }
+        }
+
+        // Aggregate by category and signal
+        const byCategory: Record<string, { positive: number; negative: number; correction: number; items: string[] }> = {}
+        for (const f of feedback) {
+          if (!byCategory[f.category]) {
+            byCategory[f.category] = { positive: 0, negative: 0, correction: 0, items: [] }
+          }
+          const cat = byCategory[f.category]
+          if (f.signal === 'positive') cat.positive++
+          else if (f.signal === 'negative') cat.negative++
+          else if (f.signal === 'correction') cat.correction++
+
+          if (f.signal !== 'positive' && cat.items.length < 5) {
+            cat.items.push(f.content)
+          }
+        }
+
+        const lines: string[] = [`## Feedback Summary (last ${args.days ?? 30} days, ${feedback.length} entries)\n`]
+        for (const [category, counts] of Object.entries(byCategory)) {
+          const total = counts.positive + counts.negative + counts.correction
+          const successRate = total > 0 ? Math.round((counts.positive / total) * 100) : 0
+          lines.push(`### ${category} (${successRate}% positive)`)
+          lines.push(`  +${counts.positive} positive | -${counts.negative} negative | ~${counts.correction} corrections`)
+          if (counts.items.length > 0) {
+            lines.push(`  Recent issues:`)
+            for (const item of counts.items) {
+              lines.push(`    - ${item.slice(0, 100)}`)
+            }
+          }
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: lines.join('\n'),
+          }],
+        }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
   return createSdkMcpServer({
     name: 'hughmann',
-    version: '0.3.0',
+    version: '0.4.0',
     tools: [
       // Tasks
       listTasks, createTask, updateTask, completeTask,
@@ -658,6 +762,8 @@ export function createInternalToolServer(
       updateMasterPlanSection,
       // MCP management
       listAvailableMcpServers, installMcpServer, uninstallMcpServer,
+      // Feedback
+      recordFeedback, getFeedbackSummary,
       // Utility
       getCurrentTime,
     ],

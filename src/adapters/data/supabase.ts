@@ -651,6 +651,47 @@ export class SupabaseAdapter implements DataAdapter {
 
     return (data as PlanningSessionRecord) ?? null
   }
+
+  // ─── Feedback ───────────────────────────────────────────────────────────
+
+  async saveFeedback(entry: {
+    category: string
+    signal: 'positive' | 'negative' | 'correction'
+    content: string
+    context?: string
+    domain?: string
+  }): Promise<void> {
+    if (!this.ready) return
+    await this.client.from('feedback').insert({
+      category: entry.category,
+      signal: entry.signal,
+      content: entry.content,
+      context: entry.context ?? null,
+      domain: entry.domain ?? null,
+    })
+  }
+
+  async getFeedbackPatterns(options?: {
+    domain?: string
+    category?: string
+    limit?: number
+    since?: string
+  }): Promise<{
+    category: string
+    signal: string
+    content: string
+    domain: string | null
+    created_at: string
+  }[]> {
+    if (!this.ready) return []
+    let query = this.client.from('feedback').select('category, signal, content, domain, created_at')
+    if (options?.domain) query = query.eq('domain', options.domain)
+    if (options?.category) query = query.eq('category', options.category)
+    if (options?.since) query = query.gte('created_at', options.since)
+    query = query.order('created_at', { ascending: false }).limit(options?.limit ?? 50)
+    const { data } = await query
+    return (data ?? []) as { category: string; signal: string; content: string; domain: string | null; created_at: string }[]
+  }
 }
 
 /** Parse a Supabase row into a typed Project (handles JSONB arrays) */
