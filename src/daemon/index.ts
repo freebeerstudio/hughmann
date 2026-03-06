@@ -18,6 +18,7 @@ import { boot } from '../runtime/boot.js'
 import type { Runtime } from '../runtime/runtime.js'
 import { createStats, loadStats, saveStats, canExecuteTask, recordSuccess, recordFailure, getStatsSummary, DEFAULT_GUARDRAIL_CONFIG, type DaemonStats, type GuardrailConfig } from './guardrails.js'
 import { appendProgress, type ProgressEntry } from './progress.js'
+import { runProactiveChecks } from './proactive.js'
 import type { Task } from '../types/tasks.js'
 
 const DAEMON_DIR = join(HUGHMANN_HOME, 'daemon')
@@ -103,8 +104,10 @@ export async function startDaemon(): Promise<void> {
   const executedToday = new Set<string>()
   let lastVaultSync = Date.now() // Just synced on boot
   let lastMailCheck = 0
+  let lastProactiveCheck = 0
   const VAULT_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000 // 6 hours
   const MAIL_CHECK_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes
+  const PROACTIVE_CHECK_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
 
   // Heartbeat loop
   const heartbeatTimer = setInterval(() => {
@@ -155,6 +158,18 @@ export async function startDaemon(): Promise<void> {
         lastVaultSync = Date.now()
         runVaultSync(runtime).catch(err => {
           log(`Periodic vault sync error: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      }
+
+      // Proactive checks (deadlines, stale projects, blocked tasks)
+      if (runtime.data && Date.now() - lastProactiveCheck > PROACTIVE_CHECK_INTERVAL_MS) {
+        lastProactiveCheck = Date.now()
+        runProactiveChecks(runtime.data, DAEMON_DIR).then(nudges => {
+          if (nudges.length > 0) {
+            log(`Proactive: ${nudges.length} nudge(s) — ${nudges.map(n => n.type).join(', ')}`)
+          }
+        }).catch(err => {
+          log(`Proactive check error: ${err instanceof Error ? err.message : String(err)}`)
         })
       }
 

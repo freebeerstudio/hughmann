@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import type { Runtime } from './runtime.js'
 import { HUGHMANN_HOME } from '../config.js'
 import { getProgressSummary } from '../daemon/progress.js'
+import { getNudgeSummary, consumeNudges } from '../daemon/proactive.js'
 
 const CHANGELOG_PATH = join(HUGHMANN_HOME, 'changelog.md')
 
@@ -97,6 +98,19 @@ export async function generateWelcomeBriefing(runtime: Runtime): Promise<string 
     const progress = getProgressSummary(daemonDir, 5)
     if (progress) {
       sections.push(progress)
+    }
+  } catch {
+    // Best-effort
+  }
+
+  // 5. Proactive nudges (deadlines, stale projects, etc.)
+  try {
+    const daemonDir = join(HUGHMANN_HOME, 'daemon')
+    const nudgeSummary = getNudgeSummary(daemonDir)
+    if (nudgeSummary) {
+      sections.push(nudgeSummary)
+      // Consume nudges so they don't show again
+      consumeNudges(daemonDir)
     }
   } catch {
     // Best-effort
