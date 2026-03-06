@@ -1,0 +1,28 @@
+# Source
+src/
+tsconfig.json
+
+# Dev artifacts
+*.log
+*.pid
+.DS_Store
+
+# Local data
+.env
+.env.*
+!.env.example
+store/
+workspace/
+context/
+
+# IDE
+.vscode/
+.idea/
+
+# Trigger.dev
+trigger.config.ts
+
+# Tests
+tests/
+__tests__/
+coverage/
