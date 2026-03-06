@@ -448,11 +448,18 @@ export class Runtime {
       return
     }
 
-    // Run all sub-agents in parallel
-    yield* manager.runParallelStream(agents)
+    // Run all sub-agents in parallel and collect results
+    const results = await manager.runParallel(agents)
+
+    // Yield status for each completed agent
+    for (const result of results) {
+      yield {
+        type: 'status',
+        content: result.success ? `${result.name}: completed` : `${result.name}: ${result.error}`,
+      }
+    }
 
     // Synthesize results
-    const results = await manager.runParallel(agents)
     const synthesis = results
       .filter(r => r.success)
       .map(r => `## ${r.name}\n\n${r.content}`)

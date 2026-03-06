@@ -19,16 +19,3 @@ export interface FrontendAdapter {
   start(): Promise<void>
   stop(): void
 }
-
-// Interfaces only for future phases
-export interface DataAdapter {
-  id: string
-  name: string
-  isAvailable(): boolean
-}
-
-export interface ExecutionAdapter {
-  id: string
-  name: string
-  isAvailable(): boolean
-}

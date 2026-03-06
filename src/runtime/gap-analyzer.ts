@@ -167,7 +167,7 @@ export async function getGapSummaryForFocus(
  * Check if a gap title is a duplicate of an existing task.
  * Uses substring match + word overlap to catch variations.
  */
-function isDuplicate(title: string, existing: Task[]): boolean {
+export function isDuplicate(title: string, existing: Task[]): boolean {
   const normalizedTitle = title.toLowerCase()
   const titleWords = new Set(normalizedTitle.split(/\s+/).filter(w => w.length > 3))
 

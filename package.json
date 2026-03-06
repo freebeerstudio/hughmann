@@ -19,6 +19,8 @@
     "setup": "tsx src/cli.ts setup",
     "build": "tsc && rm -rf dist/skills && cp -r src/skills dist/skills",
     "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },
@@ -61,6 +63,7 @@
     "@types/pg": "^8.18.0",
     "trigger.dev": "^4.4.2",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   }
 }
