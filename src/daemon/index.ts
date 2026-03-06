@@ -19,6 +19,7 @@ import type { Runtime } from '../runtime/runtime.js'
 import { createStats, loadStats, saveStats, canExecuteTask, recordSuccess, recordFailure, getStatsSummary, DEFAULT_GUARDRAIL_CONFIG, type DaemonStats, type GuardrailConfig } from './guardrails.js'
 import { appendProgress, type ProgressEntry } from './progress.js'
 import { runProactiveChecks } from './proactive.js'
+import { buildTaskPrompt, selectBestTask, recordTaskResult } from '../runtime/task-executor.js'
 import type { Task } from '../types/tasks.js'
 
 const DAEMON_DIR = join(HUGHMANN_HOME, 'daemon')
@@ -577,19 +578,9 @@ async function processTaskQueue(
 
   // Get next available task
   const tasks = await runtime.data.listTasks({ status: 'todo', limit: 10 })
-  if (tasks.length === 0) return
+  const task = selectBestTask(tasks)
+  if (!task) return
 
-  // Select best task: sort by priority → type weight → created_at
-  const typeWeight: Record<string, number> = { MUST: 0, MIT: 1, BIG_ROCK: 2, STANDARD: 3 }
-  const sorted = tasks.sort((a, b) => {
-    if (a.priority !== b.priority) return a.priority - b.priority
-    const wa = typeWeight[a.task_type] ?? 3
-    const wb = typeWeight[b.task_type] ?? 3
-    if (wa !== wb) return wa - wb
-    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-  })
-
-  const task = sorted[0]
   log(`[TaskQueue] Picking up task: "${task.title}" (${task.id.slice(0, 8)}) [${task.task_type} P${task.priority}]`)
 
   // Mark as in_progress
@@ -602,8 +593,12 @@ async function processTaskQueue(
     try { runtime.setDomain(task.domain) } catch { /* proceed */ }
   }
 
-  // Build task prompt with project context and memories
-  const prompt = await buildTaskPrompt(task, runtime)
+  // Build task prompt with project context and memories (shared module)
+  const prompt = await buildTaskPrompt(
+    task,
+    runtime.data,
+    (query, opts) => runtime.memory.searchSemantic(query, opts),
+  )
 
   try {
     const chunks: string[] = []
@@ -617,8 +612,8 @@ async function processTaskQueue(
     const result = chunks.join('')
     const summary = result.length > 500 ? result.slice(0, 500) + '...' : result
 
-    // Mark complete
-    await runtime.data.completeTask(task.id, summary || 'Task completed')
+    // Record result via shared module + daemon-specific tracking
+    await recordTaskResult(task, { success: true, summary, durationMs: Date.now() - taskStartTime }, runtime.data)
     recordSuccess(stats)
     saveStats(DAEMON_DIR, stats)
     log(`[TaskQueue] Completed: "${task.title}" — ${getStatsSummary(stats)}`)
@@ -637,7 +632,7 @@ async function processTaskQueue(
     logResult(`task-${task.id.slice(0, 8)}`, `# ${task.title}\n\n${result}`)
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err)
-    await runtime.data.updateTask(task.id, { status: 'blocked' })
+    await recordTaskResult(task, { success: false, summary: '', durationMs: Date.now() - taskStartTime, error: errorMsg }, runtime.data)
     recordFailure(stats)
     saveStats(DAEMON_DIR, stats)
     log(`[TaskQueue] Failed: "${task.title}" — ${errorMsg} — ${getStatsSummary(stats)}`)
@@ -651,61 +646,12 @@ async function processTaskQueue(
       domain: task.domain ?? undefined,
       project: task.project ?? undefined,
     })
-
-    // Record gap for self-improvement
-    import('../runtime/gap-analyzer.js').then(({ analyzeGapFromFailure }) =>
-      analyzeGapFromFailure(task, errorMsg, runtime.data!).catch(() => {})
-    ).catch(() => {})
   }
 
   // Restore domain
   if (task.domain && prevDomain !== runtime.activeDomain) {
     runtime.setDomain(prevDomain)
   }
-}
-
-async function buildTaskPrompt(task: Task, runtime: Runtime): Promise<string> {
-  let prompt = `Execute the following task:\n\n**Title**: ${task.title}\n`
-  if (task.description) prompt += `**Description**: ${task.description}\n`
-  if (task.project) prompt += `**Project**: ${task.project}\n`
-  if (task.domain) prompt += `**Domain**: ${task.domain}\n`
-  if (task.due_date) prompt += `**Due**: ${task.due_date}\n`
-
-  // Load project context if task has a project_id
-  if (task.project_id && runtime.data) {
-    try {
-      const project = await runtime.data.getProject(task.project_id)
-      if (project) {
-        prompt += `\n**Project Context**:\n`
-        prompt += `  Name: ${project.name}\n`
-        if (project.quarterly_goal) prompt += `  Quarterly Goal: ${project.quarterly_goal}\n`
-        if (project.goals.length > 0) prompt += `  Goals: ${project.goals.join('; ')}\n`
-        const activeMilestones = project.milestones.filter(m => !m.completed)
-        if (activeMilestones.length > 0) {
-          prompt += `  Active Milestones: ${activeMilestones.map(m => m.title).join(', ')}\n`
-        }
-      }
-    } catch {
-      // Best-effort — don't block task execution
-    }
-  }
-
-  // Search semantic memory for task relevance
-  try {
-    const memories = await runtime.memory.searchSemantic(task.title, { limit: 3 })
-    if (memories.length > 0) {
-      prompt += `\n**Relevant Memories**:\n`
-      for (const m of memories) {
-        const truncated = m.content.length > 300 ? m.content.slice(0, 300) + '...' : m.content
-        prompt += `- ${truncated}\n`
-      }
-    }
-  } catch {
-    // Best-effort
-  }
-
-  prompt += `\nComplete this task thoroughly. When done, provide a summary of what was accomplished.`
-  return prompt
 }
 
 function cleanup(): void {

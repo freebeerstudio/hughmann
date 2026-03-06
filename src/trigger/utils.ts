@@ -6,6 +6,9 @@
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
+// Re-export shared task execution utilities for cloud tasks
+export { buildTaskPrompt, selectBestTask, recordTaskResult } from '../runtime/task-executor.js'
+
 let _client: SupabaseClient | null = null
 
 export function getSupabaseClient(): SupabaseClient {
