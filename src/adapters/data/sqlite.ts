@@ -1,7 +1,10 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import type { DataAdapter } from './types.js'
+import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, Milestone, ProjectStatus } from '../../types/projects.js'
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -55,6 +58,61 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_domain ON memory_embeddings (domain);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('backlog', 'todo', 'in_progress', 'done', 'blocked')),
+  task_type TEXT NOT NULL DEFAULT 'STANDARD' CHECK (task_type IN ('MUST', 'MIT', 'BIG_ROCK', 'STANDARD')),
+  domain TEXT,
+  project TEXT,
+  priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
+  due_date TEXT,
+  cwd TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT,
+  completion_notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+CREATE INDEX IF NOT EXISTS idx_tasks_domain ON tasks (domain);
+CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks (priority);
+CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks (task_type);
+
+CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL UNIQUE,
+  description TEXT,
+  domain TEXT,
+  status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'paused', 'completed', 'archived')),
+  goals TEXT NOT NULL DEFAULT '[]',
+  quarterly_goal TEXT,
+  milestones TEXT NOT NULL DEFAULT '[]',
+  priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT,
+  metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_projects_domain ON projects (domain);
+CREATE INDEX IF NOT EXISTS idx_projects_status ON projects (status);
+CREATE INDEX IF NOT EXISTS idx_projects_slug ON projects (slug);
+
+CREATE TABLE IF NOT EXISTS planning_sessions (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  focus_area TEXT NOT NULL,
+  topics_covered TEXT NOT NULL DEFAULT '[]',
+  decisions_made TEXT NOT NULL DEFAULT '[]',
+  tasks_created TEXT NOT NULL DEFAULT '[]',
+  projects_touched TEXT NOT NULL DEFAULT '[]',
+  open_questions TEXT NOT NULL DEFAULT '[]',
+  next_steps TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_planning_sessions_created ON planning_sessions (created_at DESC);
 `
 
 /**
@@ -397,6 +455,313 @@ export class SQLiteAdapter implements DataAdapter {
   async searchKbNodes(): Promise<{ id: string; vault: string; filePath: string; title: string; content: string; similarity: number }[]> { return [] }
   async deleteKbNode(): Promise<void> {}
   async getKbNodeByPath(): Promise<null> { return null }
+
+  // ─── Tasks ──────────────────────────────────────────────────────────────
+
+  async listTasks(filters?: TaskFilters): Promise<Task[]> {
+    if (!this.ready) return []
+
+    const conditions: string[] = []
+    const params: unknown[] = []
+
+    if (filters?.status) {
+      if (Array.isArray(filters.status)) {
+        conditions.push(`status IN (${filters.status.map(() => '?').join(',')})`)
+        params.push(...filters.status)
+      } else {
+        conditions.push('status = ?')
+        params.push(filters.status)
+      }
+    }
+    if (filters?.domain) {
+      conditions.push('domain = ?')
+      params.push(filters.domain)
+    }
+    if (filters?.project) {
+      conditions.push('project = ?')
+      params.push(filters.project)
+    }
+    if (filters?.task_type) {
+      if (Array.isArray(filters.task_type)) {
+        conditions.push(`task_type IN (${filters.task_type.map(() => '?').join(',')})`)
+        params.push(...filters.task_type)
+      } else {
+        conditions.push('task_type = ?')
+        params.push(filters.task_type)
+      }
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const limit = filters?.limit ? `LIMIT ${filters.limit}` : ''
+
+    return this.db.prepare(`
+      SELECT * FROM tasks ${where}
+      ORDER BY priority ASC, created_at ASC ${limit}
+    `).all(...params) as Task[]
+  }
+
+  async createTask(input: CreateTaskInput): Promise<Task> {
+    const now = new Date().toISOString()
+    const task: Task = {
+      id: randomUUID(),
+      title: input.title,
+      description: input.description ?? null,
+      status: input.status ?? 'todo',
+      task_type: input.task_type ?? 'STANDARD',
+      domain: input.domain ?? null,
+      project: input.project ?? null,
+      project_id: input.project_id ?? null,
+      priority: input.priority ?? 3,
+      due_date: input.due_date ?? null,
+      cwd: input.cwd ?? null,
+      created_at: now,
+      updated_at: now,
+      completed_at: null,
+      completion_notes: null,
+    }
+
+    this.db.prepare(`
+      INSERT INTO tasks (id, title, description, status, task_type, domain, project, priority, due_date, cwd, created_at, updated_at, completed_at, completion_notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      task.id, task.title, task.description, task.status, task.task_type,
+      task.domain, task.project, task.priority, task.due_date, task.cwd,
+      task.created_at, task.updated_at, task.completed_at, task.completion_notes,
+    )
+
+    return task
+  }
+
+  async updateTask(id: string, input: UpdateTaskInput): Promise<Task | null> {
+    if (!this.ready) return null
+
+    const sets: string[] = []
+    const params: unknown[] = []
+
+    for (const [key, value] of Object.entries(input)) {
+      sets.push(`${key} = ?`)
+      params.push(value ?? null)
+    }
+
+    if (sets.length === 0) return this.getTask(id)
+
+    sets.push('updated_at = ?')
+    params.push(new Date().toISOString())
+    params.push(id)
+
+    this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+    return this.getTask(id)
+  }
+
+  async completeTask(id: string, notes?: string): Promise<Task | null> {
+    if (!this.ready) return null
+
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ?, completion_notes = ?
+      WHERE id = ?
+    `).run(now, now, notes ?? null, id)
+
+    return this.getTask(id)
+  }
+
+  async getTask(id: string): Promise<Task | null> {
+    if (!this.ready) return null
+
+    const row = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as (Task & Record<string, unknown>) | undefined
+    return row ? { ...row, project_id: (row.project_id as string | null) ?? null } : null
+  }
+
+  // ─── Projects ──────────────────────────────────────────────────────────────
+
+  async listProjects(filters?: ProjectFilters): Promise<Project[]> {
+    if (!this.ready) return []
+
+    const conditions: string[] = []
+    const params: unknown[] = []
+
+    if (filters?.domain) {
+      conditions.push('domain = ?')
+      params.push(filters.domain)
+    }
+    if (filters?.status) {
+      if (Array.isArray(filters.status)) {
+        conditions.push(`status IN (${filters.status.map(() => '?').join(',')})`)
+        params.push(...filters.status)
+      } else {
+        conditions.push('status = ?')
+        params.push(filters.status)
+      }
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const limit = filters?.limit ? `LIMIT ${filters.limit}` : ''
+
+    const rows = this.db.prepare(`
+      SELECT * FROM projects ${where}
+      ORDER BY priority ASC, created_at ASC ${limit}
+    `).all(...params) as Record<string, unknown>[]
+
+    return rows.map(parseSqliteProject)
+  }
+
+  async createProject(input: CreateProjectInput): Promise<Project> {
+    const now = new Date().toISOString()
+    const slug = input.slug ?? input.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    const milestones: Milestone[] = (input.milestones ?? []).map(m => ({
+      id: randomUUID(),
+      title: m.title,
+      target_date: m.target_date ?? null,
+      completed: false,
+      completed_at: null,
+    }))
+
+    const project: Project = {
+      id: randomUUID(),
+      name: input.name,
+      slug,
+      description: input.description ?? null,
+      domain: input.domain ?? null,
+      status: input.status ?? 'planning',
+      goals: input.goals ?? [],
+      quarterly_goal: input.quarterly_goal ?? null,
+      milestones,
+      priority: input.priority ?? 3,
+      created_at: now,
+      updated_at: now,
+      completed_at: null,
+      metadata: input.metadata ?? {},
+    }
+
+    this.db.prepare(`
+      INSERT INTO projects (id, name, slug, description, domain, status, goals, quarterly_goal, milestones, priority, created_at, updated_at, completed_at, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      project.id, project.name, project.slug, project.description, project.domain,
+      project.status, JSON.stringify(project.goals), project.quarterly_goal,
+      JSON.stringify(project.milestones), project.priority,
+      project.created_at, project.updated_at, project.completed_at,
+      JSON.stringify(project.metadata),
+    )
+
+    return project
+  }
+
+  async updateProject(id: string, input: UpdateProjectInput): Promise<Project | null> {
+    if (!this.ready) return null
+
+    const sets: string[] = []
+    const params: unknown[] = []
+
+    for (const [key, value] of Object.entries(input)) {
+      if (['goals', 'milestones', 'metadata'].includes(key)) {
+        sets.push(`${key} = ?`)
+        params.push(JSON.stringify(value))
+      } else {
+        sets.push(`${key} = ?`)
+        params.push(value ?? null)
+      }
+    }
+
+    if (sets.length === 0) return this.getProject(id)
+
+    sets.push('updated_at = ?')
+    params.push(new Date().toISOString())
+    params.push(id)
+
+    this.db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+    return this.getProject(id)
+  }
+
+  async getProject(id: string): Promise<Project | null> {
+    if (!this.ready) return null
+
+    const row = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    return row ? parseSqliteProject(row) : null
+  }
+
+  async getProjectBySlug(slug: string): Promise<Project | null> {
+    if (!this.ready) return null
+
+    const row = this.db.prepare('SELECT * FROM projects WHERE slug = ?').get(slug) as Record<string, unknown> | undefined
+    return row ? parseSqliteProject(row) : null
+  }
+
+  // ─── Planning Sessions ─────────────────────────────────────────────────────
+
+  async savePlanningSession(record: Omit<PlanningSessionRecord, 'id' | 'created_at'>): Promise<string> {
+    const id = randomUUID()
+
+    this.db.prepare(`
+      INSERT INTO planning_sessions (id, session_id, focus_area, topics_covered, decisions_made, tasks_created, projects_touched, open_questions, next_steps)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, record.session_id, record.focus_area,
+      JSON.stringify(record.topics_covered),
+      JSON.stringify(record.decisions_made),
+      JSON.stringify(record.tasks_created),
+      JSON.stringify(record.projects_touched),
+      JSON.stringify(record.open_questions),
+      JSON.stringify(record.next_steps),
+    )
+
+    return id
+  }
+
+  async getRecentPlanningSessions(limit = 5): Promise<PlanningSessionRecord[]> {
+    if (!this.ready) return []
+
+    const rows = this.db.prepare(`
+      SELECT * FROM planning_sessions ORDER BY created_at DESC LIMIT ?
+    `).all(limit) as Record<string, unknown>[]
+
+    return rows.map(parseSqlitePlanningSession)
+  }
+
+  async getLatestPlanningSession(): Promise<PlanningSessionRecord | null> {
+    if (!this.ready) return null
+
+    const row = this.db.prepare(`
+      SELECT * FROM planning_sessions ORDER BY created_at DESC LIMIT 1
+    `).get() as Record<string, unknown> | undefined
+
+    return row ? parseSqlitePlanningSession(row) : null
+  }
+}
+
+/** Parse a SQLite row into a typed Project (JSON-encoded arrays) */
+function parseSqliteProject(row: Record<string, unknown>): Project {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    slug: String(row.slug),
+    description: row.description != null ? String(row.description) : null,
+    domain: row.domain != null ? String(row.domain) : null,
+    status: String(row.status) as ProjectStatus,
+    goals: JSON.parse(String(row.goals ?? '[]')),
+    quarterly_goal: row.quarterly_goal != null ? String(row.quarterly_goal) : null,
+    milestones: JSON.parse(String(row.milestones ?? '[]')),
+    priority: Number(row.priority),
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+    completed_at: row.completed_at != null ? String(row.completed_at) : null,
+    metadata: JSON.parse(String(row.metadata ?? '{}')),
+  }
+}
+
+function parseSqlitePlanningSession(row: Record<string, unknown>): PlanningSessionRecord {
+  return {
+    id: String(row.id),
+    session_id: String(row.session_id),
+    focus_area: String(row.focus_area),
+    topics_covered: JSON.parse(String(row.topics_covered ?? '[]')),
+    decisions_made: JSON.parse(String(row.decisions_made ?? '[]')),
+    tasks_created: JSON.parse(String(row.tasks_created ?? '[]')),
+    projects_touched: JSON.parse(String(row.projects_touched ?? '[]')),
+    open_questions: JSON.parse(String(row.open_questions ?? '[]')),
+    next_steps: JSON.parse(String(row.next_steps ?? '[]')),
+    created_at: String(row.created_at),
+  }
 }
 
 /** Cosine similarity between two vectors */

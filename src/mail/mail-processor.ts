@@ -10,7 +10,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { HUGHMANN_HOME } from '../config.js'
-import { findElleMailbox, listMessages, readFullMessage } from './mail-reader.js'
+import { findElleMailbox, listMessages, readFullMessage, archiveMessages } from './mail-reader.js'
 import { classifyEmail, sanitizeSlugFallback, type ClassifiedEmail } from './mail-classifier.js'
 
 // ---------------------------------------------------------------------------
@@ -28,6 +28,7 @@ const INBOX_DIR_NAME = '_inbox'
 export interface MailPipelineOptions {
   dryRun?: boolean
   limit?: number
+  archive?: boolean
 }
 
 export interface MailPipelineResult {
@@ -35,6 +36,7 @@ export interface MailPipelineResult {
   filesWritten: number
   errors: number
   skippedNoise: number
+  archived: number
   typeCounts: Record<string, number>
 }
 
@@ -221,6 +223,7 @@ export async function runMailPipeline(
     filesWritten: 0,
     errors: 0,
     skippedNoise: 0,
+    archived: 0,
     typeCounts: {},
   }
 
@@ -245,7 +248,7 @@ export async function runMailPipeline(
 
   // 3. List messages
   log('Listing messages...')
-  const messages = await listMessages(mailbox.ref, 100)
+  const messages = await listMessages(mailbox.ref, 500)
   log(`Found ${messages.length} messages in Elle`)
 
   // 4. Load state
@@ -258,6 +261,25 @@ export async function runMailPipeline(
 
   if (unprocessed.length === 0) {
     log('No new emails to process.')
+
+    // Archive all fetched messages that are already processed
+    if (opts.archive && !opts.dryRun) {
+      const processedIds = new Set(Object.keys(state.processed_ids))
+      const toArchiveIndexes = messages
+        .filter((m) => processedIds.has(m.messageId))
+        .map((m) => m.index)
+      if (toArchiveIndexes.length > 0) {
+        log(`\nArchiving ${toArchiveIndexes.length} processed messages...`)
+        try {
+          const archivedCount = await archiveMessages(mailbox.ref, toArchiveIndexes, log)
+          result.archived = archivedCount
+          log(`Archived ${archivedCount} messages`)
+        } catch (err) {
+          log(`ERROR during archiving: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+    }
+
     state.last_run = new Date().toISOString()
     state.stats.last_run_count = 0
     state.stats.last_run_errors = 0
@@ -350,7 +372,27 @@ export async function runMailPipeline(
     }
   }
 
-  // 8. Update final stats
+  // 8. Archive processed messages
+  if (opts.archive && !opts.dryRun && result.processed > 0) {
+    log('\nArchiving processed messages...')
+    // Archive all fetched messages that are now processed
+    const processedIds = new Set(Object.keys(state.processed_ids))
+    const toArchiveIndexes = messages
+      .filter((m) => processedIds.has(m.messageId))
+      .map((m) => m.index)
+    if (toArchiveIndexes.length > 0) {
+      log(`\nArchiving ${toArchiveIndexes.length} processed messages...`)
+      try {
+        const archivedCount = await archiveMessages(mailbox.ref, toArchiveIndexes, log)
+        result.archived = archivedCount
+        log(`Archived ${archivedCount} messages`)
+      } catch (err) {
+        log(`ERROR during archiving: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  }
+
+  // 9. Update final stats
   state.last_run = new Date().toISOString()
   state.stats.total_processed = Object.keys(state.processed_ids).length
   state.stats.last_run_count = toProcess.length

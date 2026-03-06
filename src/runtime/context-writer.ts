@@ -137,6 +137,40 @@ export class ContextWriter {
   }
 
   /**
+   * Replace the content of a section identified by heading.
+   * Replaces everything between the heading and the next same-or-higher-level heading.
+   * Used by the agent to update Big Rocks, quarterly goals, or add project summaries.
+   */
+  updateSection(relativePath: string, sectionHeading: string, newContent: string): boolean {
+    const path = join(this.contextDir, relativePath)
+    if (!existsSync(path)) return false
+
+    let content = readFileSync(path, 'utf-8')
+    const headingPattern = new RegExp(`^(#{1,3})\\s+${escapeRegex(sectionHeading)}`, 'm')
+    const match = content.match(headingPattern)
+    if (!match || match.index === undefined) return false
+
+    const headingLevel = match[1]
+    const headingEnd = match.index + match[0].length
+    const afterHeading = content.slice(headingEnd)
+
+    // Find next heading of same or higher level
+    const nextHeadingPattern = new RegExp(`^#{1,${headingLevel.length}}\\s+`, 'm')
+    const nextMatch = afterHeading.match(nextHeadingPattern)
+
+    if (nextMatch && nextMatch.index !== undefined) {
+      // Replace between this heading and the next
+      content = content.slice(0, headingEnd) + '\n\n' + newContent + '\n\n' + content.slice(headingEnd + nextMatch.index)
+    } else {
+      // Last section — replace to end of file
+      content = content.slice(0, headingEnd) + '\n\n' + newContent + '\n'
+    }
+
+    writeFileSync(path, content, 'utf-8')
+    return true
+  }
+
+  /**
    * Append arbitrary text to a section of a context document.
    * Finds the section by heading and appends before the next section.
    */

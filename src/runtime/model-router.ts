@@ -1,22 +1,7 @@
 import type { ModelAdapter, ModelAdapterOptions } from '../types/adapters.js'
-import type { ModelRequest, ModelResponse, ModelStreamChunk, TaskComplexity, ToolOptions } from '../types/model.js'
+import type { ModelRequest, ModelResponse, ModelStreamChunk, ToolOptions } from '../types/model.js'
 
-/**
- * Maps task complexity to Claude model tier via OAuth ($0 via Max subscription).
- * All tiers default to Opus 4.6 since Max subscription has no usage limits.
- * OpenRouter is reserved for non-Claude models (embeddings, image gen, etc.).
- *
- * | Complexity      | Model              |
- * |-----------------|--------------------|
- * | lightweight     | claude-opus-4-6    |
- * | conversational  | claude-opus-4-6    |
- * | autonomous      | claude-opus-4-6    |
- */
-const COMPLEXITY_MODEL_MAP: Record<TaskComplexity, string> = {
-  lightweight: 'claude-opus-4-6',
-  conversational: 'claude-opus-4-6',
-  autonomous: 'claude-opus-4-6',
-}
+const DEFAULT_MODEL = 'claude-opus-4-6'
 
 export class ModelRouter {
   private adapters: Map<string, ModelAdapter>
@@ -27,12 +12,12 @@ export class ModelRouter {
 
   /**
    * Select provider and model for a request.
-   * - Default: Claude OAuth, model tier based on complexity
-   * - Explicit provider override: use that provider (e.g. 'openrouter' for embeddings/image models)
+   * - Default: Claude OAuth (all $0 via Max subscription)
+   * - Explicit provider override: use that provider (e.g. 'openrouter' for non-Claude models)
    * - Fallback: OpenRouter if Claude OAuth is somehow unavailable
    */
   selectProvider(request: ModelRequest): { adapter: ModelAdapter; model: string } {
-    const model = COMPLEXITY_MODEL_MAP[request.complexity]
+    const model = DEFAULT_MODEL
 
     // If a specific provider is requested (e.g. openrouter for non-Claude models)
     if (request.provider) {
@@ -42,7 +27,7 @@ export class ModelRouter {
       }
     }
 
-    // Always prefer Claude OAuth — all tiers are $0 via Max subscription
+    // Always prefer Claude OAuth — all calls are $0 via Max subscription
     const claude = this.adapters.get('claude-oauth')
     if (claude?.isAvailable()) {
       return { adapter: claude, model }
@@ -63,7 +48,7 @@ export class ModelRouter {
     if (request.toolUse) {
       opts.tools = {
         enabled: true,
-        maxTurns: 25,
+        maxTurns: 50,
         ...(request.toolOptions ?? {}),
       }
     }

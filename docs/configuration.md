@@ -34,7 +34,8 @@
 │   ├── daemon.pid                # Process ID
 │   ├── heartbeat                 # Last heartbeat timestamp
 │   ├── queue.jsonl               # Pending tasks
-│   └── schedule.json             # Schedule rules
+│   ├── schedule.json             # Schedule rules
+│   └── mail-state.json           # Email processing state (dedup)
 │
 ├── inbox/                        # Daemon trigger files
 │   └── *.md / *.txt              # Processed and deleted
@@ -87,6 +88,30 @@ SQLite requires no configuration — data is stored locally at `~/.hughmann/data
 | `EMBEDDING_API_URL` | Embedding endpoint | `https://api.openai.com/v1/embeddings` |
 | `EMBEDDING_MODEL` | Model name | `text-embedding-3-small` |
 | `OPENAI_API_KEY` | OpenAI key (backup for embeddings) | — |
+
+### Vault Sync
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `VAULT_{NAME}_PATH` | Absolute path to Obsidian vault root | For vault sync |
+| `VAULT_{NAME}_FOLDERS` | Comma-separated subfolders to sync | For vault sync |
+
+Example: `VAULT_OMNISSA_PATH`, `VAULT_OMNISSA_FOLDERS`. The `{NAME}` becomes the vault identifier (lowercased).
+
+### Trigger.dev
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `TRIGGER_SECRET_KEY` | Trigger.dev secret key | For cloud-scheduled tasks |
+
+Trigger.dev provides cloud-based scheduling as an alternative to daemon/launchd. Configure in `trigger.config.ts` at the project root.
+
+### Mail Pipeline
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MAIL_ACCOUNT` | Apple Mail account name | `Exchange` |
+| `MAIL_MAILBOX` | Mailbox to read from | `Elle` |
 
 ### Communication
 
@@ -218,17 +243,15 @@ Domain isolation is configured via section headers in `soul.md`:
 
 See [Domains](domains.md) for full details.
 
-## Custom Skill File Format
+## Custom Skill Format (SKILL.md)
 
-Markdown files with YAML-style frontmatter. File: `~/.hughmann/skills/<skill-id>.md`.
+Skills use a directory-based format. Create `~/.hughmann/skills/<skill-id>/SKILL.md`:
 
 ```markdown
 ---
 name: Code Review
 description: Review code changes and suggest improvements
-complexity: autonomous
 domain: acme
-maxTurns: 10
 ---
 Your skill prompt goes here. Everything after the frontmatter
 becomes the instruction sent to the model.
@@ -242,16 +265,25 @@ Supports full markdown.
 |-------|------|----------|-------------|
 | `name` | string | Yes | Display name |
 | `description` | string | Yes | Brief description |
-| `complexity` | enum | Yes | `lightweight`, `conversational`, or `autonomous` |
 | `domain` | string | No | Auto-switch to this domain before running |
-| `maxTurns` | integer | No | Max agent turns for autonomous (default: 25) |
+
+### Directory Structure
+
+```
+~/.hughmann/skills/
+  code-review/
+    SKILL.md            # Required: frontmatter + prompt
+    references/         # Optional: reference documents
+    scripts/            # Optional: helper scripts
+    assets/             # Optional: images, data files
+```
 
 ### Naming
 
-- Filename (minus `.md`) = skill ID
-- Invoke as `/<skill-id>` or `hughmann run <skill-id>`
-- Files starting with `_` are ignored
+- Directory name = skill ID: `code-review/` → `/code-review`
+- Directories starting with `_` are ignored
 - Cannot override built-in skill IDs
+- Legacy flat `.md` files still work but produce a deprecation warning
 
 ## Onboarding Data
 
@@ -277,14 +309,17 @@ src/
 ├── mcp-server.ts             # MCP server
 ├── banner.ts                 # CLI banner
 ├── types/                    # TypeScript interfaces
-├── runtime/                  # Core runtime (boot, session, memory, skills, etc.)
+├── runtime/                  # Core runtime (boot, session, memory, skills, gap-analyzer, etc.)
+├── tools/                    # Internal MCP tool server (tasks, projects, planning)
 ├── adapters/
 │   ├── model/                # Claude OAuth, OpenRouter
 │   ├── embeddings/           # Vector embeddings
 │   ├── data/                 # Supabase, SQLite, Turso
 │   └── frontend/             # CLI, Telegram
+├── mail/                     # Apple Mail pipeline (Elle → vault)
 ├── daemon/                   # Background daemon
 ├── scheduler/                # launchd integration
+├── trigger/                  # Trigger.dev scheduled tasks
 ├── onboarding/               # Setup wizard phases
 ├── generators/               # Context document generation
 └── util/                     # Markdown rendering
@@ -297,6 +332,6 @@ src/
 | `dev` | `tsx src/cli.ts` | Run in dev mode |
 | `chat` | `tsx src/cli.ts chat` | Interactive chat (dev) |
 | `setup` | `tsx src/cli.ts setup` | Onboarding wizard (dev) |
-| `build` | `tsc` | Compile TypeScript |
+| `build` | `tsc && cp -r src/skills dist/skills` | Compile TypeScript + copy bundled skills |
 | `start` | `node dist/cli.js` | Run compiled |
 | `typecheck` | `tsc --noEmit` | Type check only |

@@ -1,17 +1,6 @@
 import type { ModelAdapter, ModelAdapterOptions } from '../../types/adapters.js'
 import type { ModelResponse, ModelStreamChunk } from '../../types/model.js'
 
-// Dangerous bash patterns to block in autonomous mode
-const DANGEROUS_PATTERNS = [
-  /\brm\s+(-\w*[rf]|--recursive|--force)/i,
-  /\bsudo\b/i,
-  /\bmkfs\b/i,
-  /\bdd\s+if=/i,
-  />\s*\/dev\/sd/i,
-  /\bgit\s+push\s+--force/i,
-  /\bgit\s+reset\s+--hard/i,
-]
-
 /**
  * Claude OAuth adapter using the Agent SDK.
  * Piggybacks on Claude Max subscription OAuth tokens (same auth as claude-code).
@@ -60,9 +49,11 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
 
     if (tools?.enabled) {
       queryOptions.maxTurns = tools.maxTurns ?? 25
-      queryOptions.tools = { type: 'preset', preset: 'claude_code' }
-      queryOptions.permissionMode = undefined // use canUseTool instead
-      queryOptions.canUseTool = createPermissionHandler(tools.allowedTools, tools.disallowedTools)
+      queryOptions.permissionMode = 'bypassPermissions'
+      queryOptions.allowDangerouslySkipPermissions = true
+      if (tools.builtinTools !== undefined) {
+        queryOptions.tools = tools.builtinTools
+      }
       if (tools.cwd) {
         queryOptions.cwd = tools.cwd
       }
@@ -77,7 +68,7 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
       }
     } else {
       // Conversational: deny all tools so model responds from system prompt
-      queryOptions.maxTurns = 3
+      queryOptions.maxTurns = 10
       queryOptions.canUseTool = denyAllTools
     }
 
@@ -133,9 +124,11 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
 
     if (tools?.enabled) {
       queryOptions.maxTurns = tools.maxTurns ?? 25
-      queryOptions.tools = { type: 'preset', preset: 'claude_code' }
-      queryOptions.permissionMode = undefined
-      queryOptions.canUseTool = createPermissionHandler(tools.allowedTools, tools.disallowedTools)
+      queryOptions.permissionMode = 'bypassPermissions'
+      queryOptions.allowDangerouslySkipPermissions = true
+      if (tools.builtinTools !== undefined) {
+        queryOptions.tools = tools.builtinTools
+      }
       if (tools.cwd) {
         queryOptions.cwd = tools.cwd
       }
@@ -151,7 +144,7 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
     } else {
       // Conversational mode: no tools. Deny all tool use so the model responds
       // purely from the system prompt (which includes KB search results).
-      queryOptions.maxTurns = 3
+      queryOptions.maxTurns = 10
       queryOptions.canUseTool = denyAllTools
     }
 
@@ -259,36 +252,6 @@ async function denyAllTools(
   return { behavior: 'deny', message: 'Respond using the knowledge provided in your system prompt.' }
 }
 
-/**
- * Creates a permission handler for autonomous tool use.
- * Auto-allows most tools, blocks destructive bash commands.
- */
-function createPermissionHandler(
-  _allowedTools?: string[],
-  _disallowedTools?: string[],
-) {
-  return async (
-    toolName: string,
-    input: Record<string, unknown>,
-    _options: Record<string, unknown>,
-  ): Promise<{ behavior: string; message?: string; updatedInput?: Record<string, unknown> }> => {
-    // Block dangerous bash commands
-    if (toolName === 'Bash' || toolName === 'bash') {
-      const command = (input.command as string) ?? ''
-      for (const pattern of DANGEROUS_PATTERNS) {
-        if (pattern.test(command)) {
-          return {
-            behavior: 'deny',
-            message: `Blocked: "${command}" matches dangerous pattern. Use caution with destructive commands.`,
-          }
-        }
-      }
-    }
-
-    // Allow everything else
-    return { behavior: 'allow' }
-  }
-}
 
 /**
  * Format a tool use for display.
@@ -313,6 +276,22 @@ function formatToolUse(toolName: string, input?: Record<string, unknown>): strin
       return `Fetching ${input.url ?? 'URL'}`
     case 'WebSearch':
       return `Searching: "${truncate(String(input.query ?? ''), 60)}"`
+    case 'list_tasks':
+      return 'Checking tasks...'
+    case 'create_task':
+      return `Creating task: ${input.title ?? ''}`
+    case 'update_task':
+      return `Updating task ${input.id ?? ''}`
+    case 'complete_task':
+      return `Completing task ${input.id ?? ''}`
+    case 'list_projects':
+      return 'Checking projects...'
+    case 'create_project':
+      return `Creating project: ${input.name ?? ''}`
+    case 'update_project':
+      return `Updating project ${input.id ?? ''}`
+    case 'get_current_time':
+      return 'Checking time...'
     default:
       return toolName
   }

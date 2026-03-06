@@ -69,6 +69,20 @@ export async function startChatLoop(runtime: Runtime, firstBoot: boolean = false
       return
     }
 
+    // Handle bare exit/quit commands (without /)
+    const lower = trimmed.toLowerCase()
+    if (lower === 'exit' || lower === 'quit' || lower === 'bye') {
+      const session = runtime.getSessionInfo()
+      if (session && session.messageCount > 0) {
+        console.log(`  ${pc.dim('Distilling session...')}`)
+        await runtime.distillCurrent()
+      }
+      console.log()
+      console.log(`  ${DIM_COPPER(`${runtime.context.config.systemName} signing off.`)}`)
+      console.log()
+      process.exit(0)
+    }
+
     if (trimmed.startsWith('/')) {
       const handled = await handleSlashCommand(trimmed, runtime)
       if (handled === 'exit') {
@@ -93,13 +107,40 @@ export async function startChatLoop(runtime: Runtime, firstBoot: boolean = false
 
       const md = new StreamMarkdownRenderer()
       let hasOutput = false
+      let hadToolUse = false
       for await (const chunk of runtime.chatStream(trimmed)) {
-        if (chunk.type === 'text') {
-          const rendered = md.feed(chunk.content)
-          if (rendered) process.stdout.write(rendered)
-          hasOutput = true
-        } else if (chunk.type === 'error') {
-          console.error(pc.red(`\n  Error: ${chunk.content}`))
+        switch (chunk.type) {
+          case 'text': {
+            if (!hasOutput && hadToolUse) {
+              // First text after tool use — re-print Hugh's header
+              console.log()
+              process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
+            }
+            const rendered = md.feed(chunk.content)
+            if (rendered) process.stdout.write(rendered)
+            hasOutput = true
+            break
+          }
+          case 'tool_use':
+            if (hasOutput) {
+              const flushed = md.flush()
+              if (flushed) process.stdout.write(flushed)
+              process.stdout.write('\n')
+              hasOutput = false
+            }
+            console.log(`  ${pc.yellow(TOOL_ICON)} ${pc.dim(chunk.content)}`)
+            hadToolUse = true
+            break
+          case 'tool_progress':
+            break  // silent
+          case 'status':
+            console.log(`  ${pc.green(CHECK_ICON)} ${pc.dim(chunk.content)}`)
+            break
+          case 'error':
+            console.error(pc.red(`\n  Error: ${chunk.content}`))
+            break
+          case 'done':
+            break  // silent in chat
         }
       }
 
@@ -415,6 +456,95 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       return
     }
 
+    case '/tasks': {
+      if (!runtime.data) {
+        console.log(`  ${pc.dim('No data adapter configured. Tasks require a database.')}`)
+        return
+      }
+
+      if (args.startsWith('create ')) {
+        const title = args.replace('create ', '').trim()
+        if (!title) {
+          console.log(`  ${pc.dim('Usage: /tasks create <title>')}`)
+          return
+        }
+        const task = await runtime.data.createTask({ title, domain: runtime.activeDomain ?? undefined })
+        console.log(`  ${pc.green('\u2713')} Created: ${task.title} ${pc.dim(`(${task.id.slice(0, 8)})`)}`)
+        return
+      }
+
+      if (args.startsWith('done ')) {
+        const id = args.replace('done ', '').trim()
+        const allTasks = await runtime.data.listTasks()
+        const match = allTasks.find(t => t.id.startsWith(id))
+        if (!match) {
+          console.log(`  ${pc.red('No task found matching')}: ${id}`)
+          return
+        }
+        const task = await runtime.data.completeTask(match.id)
+        if (task) console.log(`  ${pc.green('\u2713')} Completed: ${task.title}`)
+        return
+      }
+
+      // Default: list active tasks
+      const tasks = await runtime.data.listTasks({ status: ['todo', 'in_progress', 'blocked'] })
+      if (tasks.length === 0) {
+        console.log(`  ${pc.dim('No active tasks. Use /tasks create <title> to add one.')}`)
+        return
+      }
+      console.log()
+      for (const t of tasks) {
+        const status = t.status === 'in_progress' ? pc.yellow('\u25b6')
+          : t.status === 'blocked' ? pc.red('\u2716')
+          : pc.green('\u25cb')
+        const type = t.task_type !== 'STANDARD' ? pc.cyan(`[${t.task_type}]`) : ''
+        const domain = t.domain ? pc.dim(`(${t.domain})`) : ''
+        console.log(`  ${status} ${type} ${t.title} ${domain} ${pc.dim(t.id.slice(0, 8))}`)
+      }
+      console.log()
+      return
+    }
+
+    case '/projects': {
+      if (!runtime.data) {
+        console.log(`  ${pc.dim('No data adapter configured. Projects require a database.')}`)
+        return
+      }
+
+      const projects = await runtime.data.listProjects({ status: ['planning', 'active', 'paused'] })
+      if (projects.length === 0) {
+        console.log(`  ${pc.dim('No projects yet. Use /focus to start a planning session and create projects.')}`)
+        return
+      }
+
+      // Group by domain
+      const grouped = new Map<string, typeof projects>()
+      for (const p of projects) {
+        const domain = p.domain ?? 'general'
+        const group = grouped.get(domain) ?? []
+        group.push(p)
+        grouped.set(domain, group)
+      }
+
+      console.log()
+      for (const [domain, group] of grouped) {
+        const domainCtx = runtime.context.domains.get(domain)
+        const label = domainCtx?.name ?? domain
+        console.log(`  ${pc.bold(label)}:`)
+        for (const p of group) {
+          const status = p.status === 'active' ? pc.green(`[active]`)
+            : p.status === 'planning' ? pc.blue(`[planning]`)
+            : pc.yellow(`[${p.status}]`)
+          const goalCount = p.goals.length > 0 ? pc.dim(` (${p.goals.length} goals)`) : ''
+          const milestoneCount = p.milestones.filter(m => !m.completed).length
+          const msText = milestoneCount > 0 ? pc.dim(` ${milestoneCount} milestones`) : ''
+          console.log(`    ${status} ${p.name}${goalCount}${msText} ${pc.dim(p.id.slice(0, 8))}`)
+        }
+      }
+      console.log()
+      return
+    }
+
     case '/do': {
       if (!args) {
         console.log(`  ${pc.dim('Usage: /do <task description>')}`)
@@ -545,29 +675,19 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       console.log()
       console.log(`  ${pc.bold('Built-in Skills')}:`)
       for (const s of builtins) {
-        const tier = s.complexity === 'autonomous'
-          ? pc.yellow('[opus+tools]')
-          : s.complexity === 'lightweight'
-            ? pc.dim('[haiku]')
-            : pc.blue('[sonnet]')
-        console.log(`    ${pc.cyan('/' + s.id)}${' '.repeat(Math.max(1, 18 - s.id.length))}${s.description} ${tier}`)
+        console.log(`    ${pc.cyan('/' + s.id)}${' '.repeat(Math.max(1, 18 - s.id.length))}${s.description}`)
       }
 
       if (custom.length > 0) {
         console.log()
         console.log(`  ${pc.bold('Custom Skills')}:`)
         for (const s of custom) {
-          const tier = s.complexity === 'autonomous'
-            ? pc.yellow('[opus+tools]')
-            : s.complexity === 'lightweight'
-              ? pc.dim('[haiku]')
-              : pc.blue('[sonnet]')
-          console.log(`    ${pc.cyan('/' + s.id)}${' '.repeat(Math.max(1, 18 - s.id.length))}${s.description} ${tier}`)
+          console.log(`    ${pc.cyan('/' + s.id)}${' '.repeat(Math.max(1, 18 - s.id.length))}${s.description}`)
         }
       }
 
       console.log()
-      console.log(`  ${pc.dim('Add custom skills to ~/.hughmann/skills/ as .md files.')}`)
+      console.log(`  ${pc.dim('Add custom skills to ~/.hughmann/skills/ as directories with SKILL.md.')}`)
       console.log()
       return
     }
@@ -583,6 +703,8 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
       console.log(`  ${pc.bold('Autonomous')}:`)
       console.log(`    ${pc.cyan('/do <task>')}        Execute a task with tools ${pc.dim('(Opus + file/shell/web/MCP)')}`)
       console.log(`    ${pc.cyan('/parallel <task>')}  Decompose into sub-agents and run in parallel`)
+      console.log(`    ${pc.cyan('/tasks')}            List active tasks ${pc.dim('(create <title> | done <id>)')}`)
+      console.log(`    ${pc.cyan('/projects')}         List active projects grouped by domain`)
       console.log(`    ${pc.cyan('/skills')}           List all available skills`)
       console.log(`    ${pc.cyan('/mcp')}              List configured MCP servers`)
       console.log()
@@ -631,10 +753,7 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
 }
 
 /**
- * Execute a skill. Routes to the appropriate handler based on complexity tier.
- * - autonomous: uses doTaskStream (opus + tools)
- * - conversational: uses chatStream (sonnet)
- * - lightweight: uses chatStream (routed to haiku via complexity)
+ * Execute a skill. Always uses doTaskStream — tools available, model chooses whether to use them.
  */
 async function runSkill(skill: Skill, runtime: Runtime, extraArgs: string): Promise<void> {
   const systemName = runtime.context.config.systemName
@@ -657,103 +776,69 @@ async function runSkill(skill: Skill, runtime: Runtime, extraArgs: string): Prom
 
   console.log()
   console.log(`  ${GOLD(systemName)} ${pc.dim('running skill:')} ${pc.bold(skill.name)}`)
+  console.log()
 
-  if (skill.complexity === 'autonomous') {
-    // Autonomous: opus + tools via doTaskStream
-    console.log(`  ${pc.dim('Using Opus with tools. This may take a moment...')}`)
-    console.log()
+  try {
+    let hasText = false
+    let lastToolName: string | null = null
+    const md = new StreamMarkdownRenderer()
 
-    try {
-      let hasText = false
-      let lastToolName: string | null = null
-      const md = new StreamMarkdownRenderer()
-
-      for await (const chunk of runtime.doTaskStream(prompt, {
-        maxTurns: skill.maxTurns,
-      })) {
-        switch (chunk.type) {
-          case 'tool_use': {
-            if (hasText) {
-              const flushed = md.flush()
-              if (flushed) process.stdout.write(flushed)
-              process.stdout.write('\n')
-              hasText = false
-            }
-            lastToolName = chunk.metadata?.toolName ?? null
-            console.log(`  ${pc.yellow(TOOL_ICON)} ${pc.dim(chunk.content)}`)
-            break
-          }
-          case 'tool_progress': break
-          case 'status': {
-            console.log(`  ${pc.green(CHECK_ICON)} ${pc.dim(chunk.content)}`)
-            break
-          }
-          case 'text': {
-            if (!hasText && lastToolName) {
-              console.log()
-              process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
-              lastToolName = null
-            } else if (!hasText) {
-              process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
-            }
-            const rendered = md.feed(chunk.content)
-            if (rendered) process.stdout.write(rendered)
-            hasText = true
-            break
-          }
-          case 'error': {
-            console.error(pc.red(`\n  Error: ${chunk.content}`))
-            break
-          }
-          case 'done': {
+    for await (const chunk of runtime.doTaskStream(prompt)) {
+      switch (chunk.type) {
+        case 'tool_use': {
+          if (hasText) {
             const flushed = md.flush()
             if (flushed) process.stdout.write(flushed)
-            if (hasText) process.stdout.write('\n')
-            const turns = chunk.metadata?.turnCount
-            const cost = chunk.metadata?.costUsd
-            const stats: string[] = []
-            if (turns) stats.push(`${turns} turns`)
-            if (cost !== undefined) stats.push(`$${cost.toFixed(4)}`)
-            if (stats.length > 0) {
-              console.log()
-              console.log(`  ${pc.dim(`Skill complete (${stats.join(', ')})`)}`)
-            }
-            break
+            process.stdout.write('\n')
+            hasText = false
           }
+          lastToolName = chunk.metadata?.toolName ?? null
+          console.log(`  ${pc.yellow(TOOL_ICON)} ${pc.dim(chunk.content)}`)
+          break
         }
-      }
-      console.log()
-    } catch (err) {
-      console.error(pc.red(`\n  Skill failed: ${err instanceof Error ? err.message : String(err)}`))
-      console.log()
-    }
-  } else {
-    // Conversational or lightweight: use chatStream
-    console.log()
-
-    try {
-      process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
-
-      const md = new StreamMarkdownRenderer()
-      let hasOutput = false
-      for await (const chunk of runtime.chatStream(prompt)) {
-        if (chunk.type === 'text') {
+        case 'tool_progress': break
+        case 'status': {
+          console.log(`  ${pc.green(CHECK_ICON)} ${pc.dim(chunk.content)}`)
+          break
+        }
+        case 'text': {
+          if (!hasText && lastToolName) {
+            console.log()
+            process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
+            lastToolName = null
+          } else if (!hasText) {
+            process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
+          }
           const rendered = md.feed(chunk.content)
           if (rendered) process.stdout.write(rendered)
-          hasOutput = true
-        } else if (chunk.type === 'error') {
+          hasText = true
+          break
+        }
+        case 'error': {
           console.error(pc.red(`\n  Error: ${chunk.content}`))
+          break
+        }
+        case 'done': {
+          const flushed = md.flush()
+          if (flushed) process.stdout.write(flushed)
+          if (hasText) process.stdout.write('\n')
+          const turns = chunk.metadata?.turnCount
+          const cost = chunk.metadata?.costUsd
+          const stats: string[] = []
+          if (turns) stats.push(`${turns} turns`)
+          if (cost !== undefined) stats.push(`$${cost.toFixed(4)}`)
+          if (stats.length > 0) {
+            console.log()
+            console.log(`  ${pc.dim(`Skill complete (${stats.join(', ')})`)}`)
+          }
+          break
         }
       }
-
-      const remaining = md.flush()
-      if (remaining) process.stdout.write(remaining)
-      if (hasOutput) process.stdout.write('\n')
-      console.log()
-    } catch (err) {
-      console.error(pc.red(`\n  Skill failed: ${err instanceof Error ? err.message : String(err)}`))
-      console.log()
     }
+    console.log()
+  } catch (err) {
+    console.error(pc.red(`\n  Skill failed: ${err instanceof Error ? err.message : String(err)}`))
+    console.log()
   }
 
   // Restore domain if we auto-switched

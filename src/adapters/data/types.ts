@@ -1,3 +1,6 @@
+import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord } from '../../types/projects.js'
+
 /**
  * Common interface for data adapters (Supabase, SQLite, Turso, etc.)
  * Both persistent storage and vector memory operations.
@@ -141,4 +144,26 @@ export interface DataAdapter {
     contentHash?: string
     lastModified?: string
   } | null>
+
+  // ─── Tasks ──────────────────────────────────────────────────────────
+
+  listTasks(filters?: TaskFilters): Promise<Task[]>
+  createTask(input: CreateTaskInput): Promise<Task>
+  updateTask(id: string, input: UpdateTaskInput): Promise<Task | null>
+  completeTask(id: string, notes?: string): Promise<Task | null>
+  getTask(id: string): Promise<Task | null>
+
+  // ─── Projects ──────────────────────────────────────────────────────────
+
+  listProjects(filters?: ProjectFilters): Promise<Project[]>
+  createProject(input: CreateProjectInput): Promise<Project>
+  updateProject(id: string, input: UpdateProjectInput): Promise<Project | null>
+  getProject(id: string): Promise<Project | null>
+  getProjectBySlug(slug: string): Promise<Project | null>
+
+  // ─── Planning Sessions ─────────────────────────────────────────────────
+
+  savePlanningSession(record: Omit<PlanningSessionRecord, 'id' | 'created_at'>): Promise<string>
+  getRecentPlanningSessions(limit?: number): Promise<PlanningSessionRecord[]>
+  getLatestPlanningSession(): Promise<PlanningSessionRecord | null>
 }

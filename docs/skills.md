@@ -1,17 +1,21 @@
 # Skills
 
-Skills are reusable AI prompts with configurable complexity. HughMann ships with six built-in skills and supports custom skills via markdown files.
+Skills are reusable AI prompts packaged as directories. HughMann ships with eight built-in skills and supports custom skills via the standard SKILL.md format.
 
 ## Built-In Skills
 
-| ID | Name | Complexity | Max Turns | Description |
-|----|------|------------|-----------|-------------|
-| `morning` | Morning Dashboard | autonomous | 15 | Review priorities, set daily MUST + 3 MITs |
-| `closeout` | Afternoon Closeout | conversational | — | Review progress, plan tomorrow, call out wins |
-| `review` | Weekly Review | autonomous | 20 | Reflect on week, suggest next week's Big Rocks |
-| `status` | Quick Status | conversational | — | One-line status per domain + top priority |
-| `plan` | Master Plan Review | autonomous | 15 | Review and update quarterly goals and master plan |
-| `habits` | Habit Check | conversational | — | Check in on 7 core daily habits |
+| ID | Name | Description |
+|----|------|-------------|
+| `morning` | Morning Dashboard | Review priorities, set daily MUST + 3 MITs |
+| `closeout` | Afternoon Closeout | Review progress, plan tomorrow, call out wins |
+| `review` | Weekly Review | Reflect on week, suggest next week's Big Rocks |
+| `status` | Quick Status | One-line status per domain + top priority |
+| `plan-review` | Master Plan Review | Review and update quarterly goals and master plan |
+| `plan` | Task Planning | Create structured tasks from master plan and goals |
+| `focus` | Strategic Planning | 15-min collaborative planning session |
+| `habits` | Habit Check | Check in on 7 core daily habits |
+
+All skills run with full capabilities (Opus model + tools). The model decides whether to use tools based on the task.
 
 ## Running Skills
 
@@ -34,42 +38,37 @@ hughmann morning -q
 ### From Interactive Chat
 
 ```
-alice > /morning
-alice > /status
-alice > /habits
-alice > /skills          # List all available skills
+wayne > /morning
+wayne > /status
+wayne > /habits
+wayne > /skills          # List all available skills
 ```
 
 ### Via MCP
 
 External MCP clients can call `run_skill` with a `skill_id` parameter.
 
-## Complexity Tiers
-
-Each skill declares a complexity tier that determines the model and capabilities:
-
-| Tier | Model | Tools | Best For |
-|------|-------|-------|----------|
-| `lightweight` | Haiku | None | Quick answers, classifications, simple lookups |
-| `conversational` | Sonnet | None | Discussion, analysis, most daily interactions |
-| `autonomous` | Opus | File I/O, shell, web, MCP | Multi-step tasks, file edits, research |
-
-Autonomous skills have a configurable `maxTurns` (default: 25) that limits the number of agent turns before stopping.
-
-With a Claude Max subscription, all tiers are $0 per token.
-
 ## Creating Custom Skills
 
-Add a `.md` file to `~/.hughmann/skills/`. The filename (minus `.md`) becomes the skill ID.
+Create a directory in `~/.hughmann/skills/` containing a `SKILL.md` file.
 
-### Format
+### Directory Structure
+
+```
+~/.hughmann/skills/
+  code-review/
+    SKILL.md            # Required: frontmatter + prompt
+    references/         # Optional: reference documents
+    scripts/            # Optional: helper scripts
+    assets/             # Optional: images, data files
+```
+
+### SKILL.md Format
 
 ```markdown
 ---
 name: Code Review
 description: Review code changes and suggest improvements
-complexity: autonomous
-maxTurns: 10
 ---
 Review the latest code changes in my current project. For each file:
 
@@ -86,20 +85,7 @@ Be specific — reference line numbers and provide fixed code.
 |-------|------|----------|-------------|
 | `name` | string | Yes | Display name |
 | `description` | string | Yes | Shown in skill listings |
-| `complexity` | enum | Yes | `lightweight`, `conversational`, or `autonomous` |
-| `domain` | string | No | Auto-switch to this domain before running |
-| `maxTurns` | integer | No | Max agent turns for autonomous skills (default: 25) |
-
-### Example: Lightweight Skill
-
-```markdown
----
-name: Quick Summary
-description: Summarize the current conversation
-complexity: lightweight
----
-Summarize our conversation so far in 3 bullet points. Focus on decisions made and action items.
-```
+| `domain` | string | No | Auto-switch to this domain before running (Hugh extension) |
 
 ### Example: Domain-Specific Skill
 
@@ -107,9 +93,7 @@ Summarize our conversation so far in 3 bullet points. Focus on decisions made an
 ---
 name: Customer Prep
 description: Prepare for a customer meeting
-complexity: autonomous
 domain: acme
-maxTurns: 12
 ---
 Prepare a meeting brief for my next customer meeting. Include:
 
@@ -121,14 +105,35 @@ Prepare a meeting brief for my next customer meeting. Include:
 
 ### Naming Rules
 
-- Filename becomes the skill ID: `code-review.md` → `/code-review`
-- Files starting with `_` are ignored (use for templates)
+- Directory name becomes the skill ID: `code-review/` → `/code-review`
+- Directories starting with `_` are ignored (use for templates)
 - Custom skills cannot override built-in skill IDs
-- Use lowercase and hyphens for filenames
+- Use lowercase and hyphens for directory names
 
 ### Hot Reload
 
 Custom skills are loaded at startup. Use `/reload` in chat to pick up new or edited skills without restarting.
+
+## Migration from Legacy Format
+
+Previously, skills used flat `.md` files with `complexity` and `maxTurns` frontmatter:
+
+```markdown
+---
+name: My Skill
+description: What it does
+complexity: autonomous
+maxTurns: 15
+---
+Prompt here...
+```
+
+These flat `.md` files still load but produce a deprecation warning. To migrate:
+
+1. Create a directory with the skill name: `~/.hughmann/skills/my-skill/`
+2. Move your `.md` file into it as `SKILL.md`
+3. Remove `complexity` and `maxTurns` from the frontmatter (they're ignored now)
+4. Delete the original flat `.md` file
 
 ## Built-In Skill Details
 
@@ -164,7 +169,7 @@ Friday weekly review:
 
 Quick snapshot — one status line per domain plus the single most important thing to focus on right now. Designed to be under 20 lines.
 
-### plan
+### plan-review
 
 Reviews and updates `master-plan.md`:
 - Quarterly goal assessment
@@ -172,6 +177,14 @@ Reviews and updates `master-plan.md`:
 - Decision log summary
 - Gap identification
 - Makes edits directly to the file
+
+### plan
+
+Creates structured tasks from master plan and goals. Uses internal tools to create tasks in the database.
+
+### focus
+
+Interactive 15-minute strategic planning session. Hugh leads, proposes projects and tasks, captures decisions. Uses planning tools to create projects and tasks. Now also surfaces auto-detected self-improvement gaps for review — any gaps worth promoting to active work or dismissing.
 
 ### habits
 

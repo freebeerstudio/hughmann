@@ -12,7 +12,7 @@
     "dev": "tsx src/cli.ts",
     "chat": "tsx src/cli.ts chat",
     "setup": "tsx src/cli.ts setup",
-    "build": "tsc",
+    "build": "tsc && cp -r src/skills dist/skills",
     "start": "node dist/cli.js",
     "typecheck": "tsc --noEmit"
   },

@@ -1,4 +1,4 @@
-import type { ContextStore, DomainContext } from '../types/context.js'
+import type { ContextStore, DomainContext, IsolationZone } from '../types/context.js'
 import type { ModelStreamChunk, ToolOptions, McpServerConfig } from '../types/model.js'
 import { ModelRouter } from './model-router.js'
 import { buildSystemPrompt } from './system-prompt-builder.js'
@@ -32,10 +32,12 @@ export class Runtime {
   skills: SkillManager
   data?: DataAdapter
   usage?: UsageTracker
+  internalToolServer?: ReturnType<typeof import('../tools/internal-tools.js').createInternalToolServer>
 
   private contextDir: string
   private turnsSinceDistill = 0
   private watcher: ContextWatcher | null = null
+  private memoryCache: { key: string; result: string | null; expiresAt: number } | null = null
 
   constructor(
     context: ContextStore,
@@ -47,6 +49,7 @@ export class Runtime {
     skills?: SkillManager,
     data?: DataAdapter,
     usage?: UsageTracker,
+    internalToolServer?: unknown,
   ) {
     this.context = context
     this.router = router
@@ -58,9 +61,11 @@ export class Runtime {
     this.skills = skills ?? new SkillManager(contextDir.replace('/context', ''))
     this.data = data
     this.usage = usage
+    this.internalToolServer = internalToolServer as typeof this.internalToolServer
   }
 
   setDomain(slug: string | null): void {
+    this.invalidateMemoryCache()
     if (slug === null) {
       this.activeDomain = null
       this.sessions.setDomain(null)
@@ -93,7 +98,6 @@ export class Runtime {
 
     const response = await this.router.route({
       messages: contextMessages,
-      complexity: 'conversational',
     }, systemPrompt)
 
     this.sessions.addTurn(userMessage, response.content)
@@ -127,20 +131,29 @@ export class Runtime {
 
     let fullResponse = ''
 
+    const toolOptions: Partial<ToolOptions> = {
+      maxTurns: 50,
+      mcpServers: {
+        ...(Object.keys(this.mcpServers).length > 0 ? this.mcpServers : {}),
+        ...(this.internalToolServer ? { hughmann: this.internalToolServer } : {}),
+      },
+    }
+
     for await (const chunk of this.router.routeStream({
       messages: contextMessages,
-      complexity: 'conversational',
+      toolUse: true,
+      toolOptions,
     }, systemPrompt)) {
       if (chunk.type === 'text') {
         fullResponse += chunk.content
       }
-      if (chunk.type === 'done' && this.usage && chunk.metadata?.costUsd) {
+      if (chunk.type === 'done' && this.usage) {
         this.usage.record({
           provider: 'claude-oauth',
-          model: 'claude-sonnet-4-6',
+          model: 'claude-opus-4-6',
           inputTokens: 0,
           outputTokens: 0,
-          costUsd: chunk.metadata.costUsd,
+          costUsd: 0, // Max subscription — no per-call cost
           domain: this.activeDomain,
           source: 'chat',
         })
@@ -173,27 +186,29 @@ export class Runtime {
     let fullResponse = ''
 
     const toolOptions: Partial<ToolOptions> = {
-      maxTurns: options?.maxTurns ?? 25,
+      maxTurns: options?.maxTurns ?? 50,
       cwd: options?.cwd,
-      mcpServers: Object.keys(this.mcpServers).length > 0 ? this.mcpServers : undefined,
+      mcpServers: {
+        ...(Object.keys(this.mcpServers).length > 0 ? this.mcpServers : {}),
+        ...(this.internalToolServer ? { hughmann: this.internalToolServer } : {}),
+      },
     }
 
     for await (const chunk of this.router.routeStream({
       messages: contextMessages,
-      complexity: 'autonomous',
       toolUse: true,
       toolOptions,
     }, systemPrompt)) {
       if (chunk.type === 'text') {
         fullResponse += chunk.content
       }
-      if (chunk.type === 'done' && this.usage && chunk.metadata?.costUsd) {
+      if (chunk.type === 'done' && this.usage) {
         this.usage.record({
           provider: 'claude-oauth',
           model: 'claude-opus-4-6',
           inputTokens: 0,
           outputTokens: 0,
-          costUsd: chunk.metadata.costUsd,
+          costUsd: 0, // Max subscription — no per-call cost
           domain: this.activeDomain,
           source: 'task',
         })
@@ -267,6 +282,7 @@ export class Runtime {
     if (result) {
       this.memory.markDistilled(session.id)
       this.turnsSinceDistill = 0
+      this.invalidateMemoryCache()
       // Sync memory to Supabase (text)
       this.data?.saveMemory({
         sessionId: session.id,
@@ -276,6 +292,16 @@ export class Runtime {
       }).catch(() => {})
       // Generate and store embedding (vector)
       this.memory.embedAndStore(result, session.id, session.domain).catch(() => {})
+
+      // Analyze for capability gaps (post-distillation)
+      if (this.data) {
+        const distillModel = this.memory.getDistillModel()
+        if (distillModel) {
+          import('./gap-analyzer.js').then(({ analyzeGapsFromDistillation }) =>
+            analyzeGapsFromDistillation(result, distillModel, this.data!).catch(() => {})
+          ).catch(() => {})
+        }
+      }
     }
     return result
   }
@@ -286,6 +312,24 @@ export class Runtime {
     await this.distillCurrent()
   }
 
+  private static readonly TRIVIAL_PATTERN = /^(hey|hi|hello|thanks|ok|sure|yes|no|got it|sounds good|bye|quit|exit)\b/i
+
+  /** Cached memory retrieval with 60s TTL per domain */
+  private async getCachedMemories(domain: string | null, isolation?: IsolationZone): Promise<string | null> {
+    const key = `${domain ?? 'general'}:${isolation ?? 'none'}`
+    if (this.memoryCache && this.memoryCache.key === key && Date.now() < this.memoryCache.expiresAt) {
+      return this.memoryCache.result
+    }
+    const result = await this.memory.getRecentMemories(3, domain, isolation)
+    this.memoryCache = { key, result, expiresAt: Date.now() + 60_000 }
+    return result
+  }
+
+  /** Invalidate memory cache (called on domain switch, distillation) */
+  private invalidateMemoryCache(): void {
+    this.memoryCache = null
+  }
+
   /** Build system prompt including recent domain-filtered memories and knowledge search */
   private async buildPromptAsync(userMessage?: string): Promise<string> {
     // Get isolation zone for active domain
@@ -294,17 +338,29 @@ export class Runtime {
       : null
     const isolation = domainContext?.isolation
 
-    const recentMemories = await this.memory.getRecentMemories(
-      3,
-      this.activeDomain,
-      isolation,
-    )
+    // Determine if KB search is needed (skip for trivial messages)
+    const needsKbSearch = userMessage
+      && userMessage.length > 15
+      && !Runtime.TRIVIAL_PATTERN.test(userMessage.trim())
+
+    // Run memories + KB search in parallel
+    const [recentMemories, kbResults] = await Promise.all([
+      this.getCachedMemories(this.activeDomain, isolation),
+      needsKbSearch
+        ? this.memory.searchKnowledge(userMessage, {
+            limit: 5,
+            vault: this.activeDomain ?? undefined,
+            threshold: 0.2,
+          }).catch(() => [])
+        : Promise.resolve([]),
+    ])
 
     let prompt = buildSystemPrompt(this.context, {
       activeDomain: this.activeDomain ?? undefined,
       includeMasterPlan: true,
       includeGrowth: false,
       firstBoot: this.firstBoot,
+      hasTools: !!this.internalToolServer,
     })
 
     // Only use firstBoot for the first message
@@ -318,27 +374,14 @@ export class Runtime {
         recentMemories
     }
 
-    // Semantic knowledge search — retrieve relevant vault content for the user's message
-    if (userMessage) {
-      try {
-        const kbResults = await this.memory.searchKnowledge(userMessage, {
-          limit: 5,
-          vault: this.activeDomain ?? undefined,
-          threshold: 0.2,
-        })
-
-        if (kbResults.length > 0) {
-          prompt += '\n\n---\n\n## Relevant Knowledge\n\n' +
-            'The following documents from the knowledge base are relevant to the current query:\n\n'
-          for (const result of kbResults) {
-            const truncated = result.content.length > 1500
-              ? result.content.slice(0, 1500) + '\n\n[... truncated ...]'
-              : result.content
-            prompt += `### ${result.title} (${result.filePath})\n\n${truncated}\n\n`
-          }
-        }
-      } catch (err) {
-        console.error(`[runtime] Knowledge search failed: ${err instanceof Error ? err.message : String(err)}`)
+    if (kbResults.length > 0) {
+      prompt += '\n\n---\n\n## Relevant Knowledge\n\n' +
+        'The following documents from the knowledge base are relevant to the current query:\n\n'
+      for (const result of kbResults) {
+        const truncated = result.content.length > 1500
+          ? result.content.slice(0, 1500) + '\n\n[... truncated ...]'
+          : result.content
+        prompt += `### ${result.title} (${result.filePath})\n\n${truncated}\n\n`
       }
     }
 
@@ -378,7 +421,7 @@ export class Runtime {
 
   /**
    * Run multiple sub-agents in parallel for complex tasks.
-   * Each agent gets its own model call with appropriate complexity tier.
+   * Each agent gets its own model call with tools enabled.
    */
   async runSubAgents(agents: SubAgent[]): Promise<SubAgentResult[]> {
     const systemPrompt = this.buildPrompt()

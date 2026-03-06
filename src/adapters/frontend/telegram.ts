@@ -39,8 +39,7 @@ export async function startTelegramBot(runtime: Runtime, token: string): Promise
 
     let msg = '*Available Skills:*\n\n'
     for (const s of builtins) {
-      const tier = s.complexity === 'autonomous' ? '(opus+tools)' : s.complexity === 'lightweight' ? '(haiku)' : '(sonnet)'
-      msg += `/${s.id} - ${s.description} ${tier}\n`
+      msg += `/${s.id} - ${s.description}\n`
     }
     if (custom.length > 0) {
       msg += '\n*Custom:*\n'
@@ -159,21 +158,8 @@ async function executeSkill(
   await ctx.replyWithChatAction('typing')
 
   try {
-    if (skill.complexity === 'autonomous') {
-      await executeAutonomousTask(ctx, runtime, prompt, systemName)
-    } else {
-      // Conversational
-      await runtime.initSession()
-
-      let fullResponse = ''
-      for await (const chunk of runtime.chatStream(prompt)) {
-        if (chunk.type === 'text') {
-          fullResponse += chunk.content
-        }
-      }
-
-      await sendLongMessage(ctx, fullResponse)
-    }
+    // All skills use doTaskStream — tools available, model chooses whether to use them
+    await executeAutonomousTask(ctx, runtime, prompt, systemName)
   } catch (err) {
     await ctx.reply(`Skill failed: ${err instanceof Error ? err.message : String(err)}`)
   }

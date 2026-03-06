@@ -3,11 +3,16 @@ import type { AutonomySettings } from '../types.js'
 
 export async function collectAutonomy(systemName: string, existing?: AutonomySettings): Promise<AutonomySettings | symbol> {
   p.note(
-    `Define how independently ${systemName} operates.\n\n` +
-    `There's a spectrum from "ask me before everything" to\n` +
-    `"handle it and tell me what you did." Most people start\n` +
-    `in the middle and dial up autonomy as trust builds.`,
-    existing ? 'Edit Autonomy' : 'Autonomy & Communication'
+    `${systemName} is built to act, not ask.\n\n` +
+    `Unlike typical AI tools that prompt for permission on every action,\n` +
+    `${systemName} has full access to your files, shell, and tools at all\n` +
+    `times — in every conversation, not just special modes.\n\n` +
+    `Safety comes from guardrails (task limits, business hours, failure\n` +
+    `cooldowns) and context rules (never spend money or grant access\n` +
+    `without approval) — not from interrupting you.\n\n` +
+    `Choose how much ${systemName} does on his own vs. checks in first.\n` +
+    `You can always change this later.`,
+    existing ? 'Edit Autonomy' : 'Autonomy & Agency'
   )
 
   const level = await p.select({

@@ -9,6 +9,7 @@ import { Runtime } from './runtime.js'
 import { SessionManager } from './session.js'
 import { MemoryManager } from './memory.js'
 import { loadMcpConfig } from './mcp-config.js'
+import { ContextWriter } from './context-writer.js'
 import { SkillManager } from './skills.js'
 import { SupabaseAdapter } from '../adapters/data/supabase.js'
 import { SQLiteAdapter } from '../adapters/data/sqlite.js'
@@ -169,12 +170,38 @@ export async function boot(): Promise<BootResult> {
 
   if (dataAdapter) {
     memory.setDataAdapter(dataAdapter)
+
+    // Seed self-improvement project if it doesn't exist
+    dataAdapter.getProjectBySlug('self-improvement').then(existing => {
+      if (existing) return
+      return dataAdapter.createProject({
+        name: 'Self-Improvement',
+        slug: 'self-improvement',
+        description: 'Permanent project for tracking and resolving Hugh\'s capability gaps. Auto-populated from distillation analysis and daemon failures.',
+        domain: 'personal',
+        status: 'active',
+        goals: ['Identify capability gaps proactively', 'Reduce recurring failures', 'Improve autonomously over time'],
+      })
+    }).catch(() => {}) // Best-effort, never blocks boot
+  }
+
+  // Create internal tool server (task management, project listing, planning, etc.)
+  const contextWriter = new ContextWriter(contextDir)
+  let internalToolServer: unknown
+  if (dataAdapter) {
+    try {
+      const { createInternalToolServer } = await import('../tools/internal-tools.js')
+      internalToolServer = createInternalToolServer(dataAdapter, contextResult.store, contextWriter, memory)
+      warnings.push('Internal tools available (tasks, projects, planning)')
+    } catch {
+      // Best-effort — internal tools are optional
+    }
   }
 
   // Initialize usage tracker
   const usage = new UsageTracker(HUGHMANN_HOME)
 
-  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers, skills, dataAdapter, usage)
+  const runtime = new Runtime(contextResult.store, router, contextDir, sessions, memory, mcpConfig.servers, skills, dataAdapter, usage, internalToolServer)
 
   return { success: true, runtime, warnings, errors }
 }

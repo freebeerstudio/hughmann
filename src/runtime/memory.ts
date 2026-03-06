@@ -42,6 +42,11 @@ export class MemoryManager {
     this.model = adapter
   }
 
+  /** Get the distill model adapter (for gap analysis, etc.) */
+  getDistillModel(): ModelAdapter | null {
+    return this.model
+  }
+
   /** Set the embedding adapter for vector memory */
   setEmbeddings(adapter: EmbeddingAdapter): void {
     this.embeddings = adapter

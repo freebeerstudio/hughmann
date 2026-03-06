@@ -88,17 +88,12 @@ server.tool(
       prompt += `\n\nAdditional context: ${extra_context}`
     }
 
-    let result: string
-    if (skill.complexity === 'autonomous') {
-      // Collect full output from autonomous task
-      const chunks: string[] = []
-      for await (const chunk of rt.doTaskStream(prompt, { maxTurns: skill.maxTurns })) {
-        if (chunk.type === 'text') chunks.push(chunk.content)
-      }
-      result = chunks.join('')
-    } else {
-      result = await rt.chat(prompt)
+    // All skills use doTaskStream — tools available, model chooses whether to use them
+    const chunks: string[] = []
+    for await (const chunk of rt.doTaskStream(prompt)) {
+      if (chunk.type === 'text') chunks.push(chunk.content)
     }
+    const result = chunks.join('')
 
     // Restore domain
     if (skill.domain && prevDomain !== rt.activeDomain) {
@@ -111,18 +106,15 @@ server.tool(
 
 server.tool(
   'list_skills',
-  'List all available HughMann skills with their descriptions and complexity levels.',
+  'List all available HughMann skills with their descriptions.',
   async () => {
     const rt = await getRuntime()
     const skills = rt.skills.list()
 
     const lines = skills.map(s => {
-      const tier = s.complexity === 'autonomous' ? '[opus+tools]'
-        : s.complexity === 'lightweight' ? '[haiku]'
-        : '[sonnet]'
       const domain = s.domain ? ` (domain: ${s.domain})` : ''
       const builtin = s.builtin ? '' : ' [custom]'
-      return `- ${s.id}: ${s.description} ${tier}${domain}${builtin}`
+      return `- ${s.id}: ${s.description}${domain}${builtin}`
     })
 
     return { content: [{ type: 'text', text: lines.join('\n') }] }

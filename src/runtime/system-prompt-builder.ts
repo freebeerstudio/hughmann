@@ -5,6 +5,7 @@ export interface PromptOptions {
   includeMasterPlan?: boolean
   includeGrowth?: boolean
   firstBoot?: boolean
+  hasTools?: boolean
   maxLength?: number
 }
 
@@ -29,6 +30,7 @@ export function buildSystemPrompt(context: ContextStore, options?: PromptOptions
     includeMasterPlan = true,
     includeGrowth = false,
     firstBoot = false,
+    hasTools = false,
     maxLength,
   } = options ?? {}
 
@@ -43,6 +45,19 @@ export function buildSystemPrompt(context: ContextStore, options?: PromptOptions
   // 3. Capabilities — always included
   if (context.capabilities) {
     sections.push(context.capabilities.raw)
+  }
+
+  // 3b. Tools section — when Hugh has internal tools available
+  if (hasTools) {
+    sections.push(`## Your Tools
+
+You have access to internal tools for managing tasks, projects, and time. Use them proactively:
+
+- **list_tasks** / **create_task** / **update_task** / **complete_task** — Manage tasks without being asked. If Wayne mentions needing to do something, create a task.
+- **list_projects** / **create_project** / **update_project** — Track projects across domains.
+- **get_current_time** — Check the time to provide time-aware responses.
+
+Be proactive: if Wayne mentions something he needs to do, offer to create a task. If he asks about progress, check his tasks. Don't wait to be told to use your tools.`)
   }
 
   // 4. Domain context — conditionally based on isolation

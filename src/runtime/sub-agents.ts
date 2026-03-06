@@ -1,5 +1,5 @@
 import type { ModelRouter } from './model-router.js'
-import type { ModelStreamChunk, TaskComplexity, McpServerConfig } from '../types/model.js'
+import type { ModelStreamChunk, McpServerConfig } from '../types/model.js'
 
 /**
  * Sub-agent definition for parallel task execution.
@@ -8,7 +8,6 @@ export interface SubAgent {
   id: string
   name: string
   task: string
-  complexity: TaskComplexity
   domain?: string
   /** System prompt override (uses default if not set) */
   systemPrompt?: string
@@ -30,7 +29,7 @@ export interface SubAgentResult {
 /**
  * Sub-agent orchestrator.
  * Spawns multiple AI agents in parallel, each with their own task and context.
- * Routes to appropriate model tier based on complexity.
+ * All sub-agents use the same model (Opus) with tools enabled.
  */
 export class SubAgentManager {
   private router: ModelRouter
@@ -80,21 +79,19 @@ export class SubAgentManager {
   }
 
   /**
-   * Stream output from a single sub-agent.
+   * Stream output from a single sub-agent. Tools always enabled.
    */
   async *stream(agent: SubAgent): AsyncIterable<ModelStreamChunk> {
     const systemPrompt = agent.systemPrompt ?? this.defaultSystemPrompt
-    const useTools = agent.complexity === 'autonomous'
 
     yield* this.router.routeStream({
       messages: [{ role: 'user', content: agent.task }],
-      complexity: agent.complexity,
-      toolUse: useTools,
-      toolOptions: useTools ? {
+      toolUse: true,
+      toolOptions: {
         enabled: true,
         maxTurns: agent.maxTurns ?? 15,
         mcpServers: Object.keys(this.mcpServers).length > 0 ? this.mcpServers : undefined,
-      } : undefined,
+      },
     }, systemPrompt)
   }
 
@@ -154,20 +151,15 @@ export class SubAgentManager {
 
   /**
    * Decompose a complex task into sub-agents using a planning call.
-   * Uses a lightweight model to analyze the task and suggest sub-tasks.
+   * Uses a planning call to analyze the task and suggest sub-tasks.
    */
   async decompose(task: string, systemPrompt?: string): Promise<SubAgent[]> {
     const planPrompt = `You are a task decomposer. Given a complex task, break it into 2-5 independent sub-tasks that can run in parallel.
 
 For each sub-task, output a JSON array with this format:
 [
-  { "id": "1", "name": "short name", "task": "detailed task description", "complexity": "conversational" }
+  { "id": "1", "name": "short name", "task": "detailed task description" }
 ]
-
-Complexity levels:
-- "lightweight": Quick factual lookups, classifications
-- "conversational": Analysis, summaries, recommendations
-- "autonomous": Tasks needing file access, web search, or tool use
 
 Only output the JSON array, nothing else.
 
@@ -176,32 +168,27 @@ ${task}`
 
     const response = await this.router.route({
       messages: [{ role: 'user', content: planPrompt }],
-      complexity: 'lightweight',
     }, systemPrompt ?? this.defaultSystemPrompt)
 
     try {
       // Extract JSON from response (may be wrapped in markdown code block)
       const jsonMatch = response.content.match(/\[[\s\S]*\]/)
-      if (!jsonMatch) return [{ id: '1', name: 'Full Task', task, complexity: 'conversational', builtin: false } as SubAgent]
+      if (!jsonMatch) return [{ id: '1', name: 'Full Task', task }]
 
       const parsed = JSON.parse(jsonMatch[0]) as Array<{
         id: string
         name: string
         task: string
-        complexity?: string
       }>
 
       return parsed.map(p => ({
         id: p.id,
         name: p.name,
         task: p.task,
-        complexity: (['lightweight', 'conversational', 'autonomous'].includes(p.complexity ?? '')
-          ? p.complexity
-          : 'conversational') as TaskComplexity,
       }))
     } catch {
       // If decomposition fails, run as single agent
-      return [{ id: '1', name: 'Full Task', task, complexity: 'conversational' }]
+      return [{ id: '1', name: 'Full Task', task }]
     }
   }
 }

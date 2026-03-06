@@ -1,5 +1,58 @@
 import pc from 'picocolors'
 
+/** Strip ANSI escape codes to get visible character count */
+function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;]*m/g, '')
+}
+
+/** Get terminal width, with a sensible fallback */
+function getTermWidth(): number {
+  return process.stdout.columns || 100
+}
+
+/**
+ * Word-wrap a rendered line (may contain ANSI codes) to fit terminal width.
+ * Uses `indent` for the first line and `hangIndent` for continuation lines.
+ */
+function wordWrap(line: string, indent: string, hangIndent: string): string[] {
+  const maxWidth = getTermWidth() - 2 // small right margin
+  const visibleLen = stripAnsi(indent).length
+
+  // If it fits, return as-is
+  if (stripAnsi(indent + line).length <= maxWidth) {
+    return [indent + line]
+  }
+
+  // Split on word boundaries, preserving ANSI codes attached to words
+  const words = line.split(/( +)/).filter(Boolean)
+  const lines: string[] = []
+  let current = indent
+  let currentVisible = visibleLen
+
+  for (const word of words) {
+    const wordVisible = stripAnsi(word).length
+    if (currentVisible + wordVisible > maxWidth && currentVisible > stripAnsi(hangIndent).length) {
+      // Wrap: push current line, start new one with hang indent
+      lines.push(current)
+      current = hangIndent
+      currentVisible = stripAnsi(hangIndent).length
+      // Skip leading whitespace on wrapped line
+      if (word.trim() === '') continue
+    }
+    current += word
+    currentVisible += wordVisible
+  }
+
+  if (currentVisible > stripAnsi(hangIndent).length) {
+    lines.push(current)
+  }
+
+  return lines
+}
+
+const INDENT = '    '  // 4-space indent for all chat output
+
 /**
  * Render markdown to ANSI-styled terminal output.
  * Handles: headers, bold, italic, inline code, code blocks, lists, HRs, links.
@@ -19,23 +72,24 @@ export function renderMarkdown(text: string): string {
         inCodeBlock = true
         codeLang = line.trimStart().slice(3).trim()
         const label = codeLang ? pc.dim(` ${codeLang}`) : ''
-        out.push(pc.dim('  ┌──') + label)
+        out.push(INDENT + pc.dim('┌──') + label)
       } else {
         inCodeBlock = false
         codeLang = ''
-        out.push(pc.dim('  └──'))
+        out.push(INDENT + pc.dim('└──'))
       }
       continue
     }
 
     if (inCodeBlock) {
-      out.push(pc.dim('  │ ') + pc.cyan(line))
+      // Code blocks: no word wrap, just indent
+      out.push(INDENT + pc.dim('│ ') + pc.cyan(line))
       continue
     }
 
     // Horizontal rule
     if (/^---+$|^\*\*\*+$|^___+$/.test(line.trim())) {
-      out.push(pc.dim('  ─────────────────────────────────'))
+      out.push(INDENT + pc.dim('─────────────────────────────────'))
       continue
     }
 
@@ -43,7 +97,7 @@ export function renderMarkdown(text: string): string {
     const h1 = line.match(/^# (.+)/)
     if (h1) {
       out.push('')
-      out.push(pc.bold(pc.underline(h1[1])))
+      out.push(INDENT + pc.bold(pc.underline(h1[1])))
       out.push('')
       continue
     }
@@ -51,50 +105,61 @@ export function renderMarkdown(text: string): string {
     const h2 = line.match(/^## (.+)/)
     if (h2) {
       out.push('')
-      out.push(pc.bold(h2[1]))
+      out.push(INDENT + pc.bold(h2[1]))
       continue
     }
 
     const h3 = line.match(/^### (.+)/)
     if (h3) {
-      out.push(pc.bold(pc.dim(h3[1])))
+      out.push(INDENT + pc.bold(pc.dim(h3[1])))
       continue
     }
 
     const h4 = line.match(/^#{4,} (.+)/)
     if (h4) {
-      out.push(pc.dim(pc.bold(h4[1])))
+      out.push(INDENT + pc.dim(pc.bold(h4[1])))
       continue
     }
 
     // Unordered list items
     const ul = line.match(/^(\s*)([-*+])\s+(.+)/)
     if (ul) {
-      const indent = ul[1]
+      const extraIndent = ul[1]
       const content = renderInline(ul[3])
-      out.push(`${indent}  \u2022 ${content}`)
+      const prefix = INDENT + extraIndent + '\u2022 '
+      const hang = INDENT + extraIndent + '  '
+      out.push(...wordWrap(content, prefix, hang))
       continue
     }
 
     // Ordered list items
     const ol = line.match(/^(\s*)(\d+)\.\s+(.+)/)
     if (ol) {
-      const indent = ol[1]
+      const extraIndent = ol[1]
       const num = ol[2]
       const content = renderInline(ol[3])
-      out.push(`${indent}  ${pc.dim(num + '.')} ${content}`)
+      const prefix = INDENT + extraIndent + pc.dim(num + '.') + ' '
+      const hang = INDENT + extraIndent + '   '
+      out.push(...wordWrap(content, prefix, hang))
       continue
     }
 
     // Blockquote
     const bq = line.match(/^>\s?(.*)/)
     if (bq) {
-      out.push(pc.dim('  \u2502 ') + pc.italic(renderInline(bq[1])))
+      const prefix = INDENT + pc.dim('\u2502 ')
+      out.push(...wordWrap(pc.italic(renderInline(bq[1])), prefix, prefix))
       continue
     }
 
-    // Regular line
-    out.push(renderInline(line))
+    // Empty line
+    if (line.trim() === '') {
+      out.push('')
+      continue
+    }
+
+    // Regular line — word wrap with indent
+    out.push(...wordWrap(renderInline(line), INDENT, INDENT))
   }
 
   return out.join('\n')

@@ -160,6 +160,11 @@ switch (flags.command) {
     break
   }
 
+  case 'tasks': {
+    await manageTasks(flags)
+    break
+  }
+
   case 'vault': {
     await manageVault(flags)
     break
@@ -177,6 +182,11 @@ switch (flags.command) {
 
   case 'morning': {
     await runBuiltinSkill('morning', flags)
+    break
+  }
+
+  case 'focus': {
+    await runBuiltinSkill('focus', flags)
     break
   }
 
@@ -294,61 +304,43 @@ async function runSkill(flags: CliFlags) {
   // Use markdown rendering for interactive, raw for quiet/piped
   const md = flags.quiet ? null : new StreamMarkdownRenderer()
 
-  if (skill.complexity === 'autonomous') {
-    // Autonomous: opus + tools
-    let hasText = false
+  // All skills use doTaskStream — tools available, model chooses whether to use them
+  let hasText = false
 
-    for await (const chunk of runtime.doTaskStream(prompt, { maxTurns: skill.maxTurns })) {
-      switch (chunk.type) {
-        case 'tool_use':
-          if (!flags.quiet) {
-            if (hasText) {
-              if (md) { const f = md.flush(); if (f) process.stdout.write(f) }
-              process.stdout.write('\n'); hasText = false
-            }
-            console.log(`  ${pc.yellow('\u2699')} ${pc.dim(chunk.content)}`)
+  for await (const chunk of runtime.doTaskStream(prompt)) {
+    switch (chunk.type) {
+      case 'tool_use':
+        if (!flags.quiet) {
+          if (hasText) {
+            if (md) { const f = md.flush(); if (f) process.stdout.write(f) }
+            process.stdout.write('\n'); hasText = false
           }
-          break
-        case 'status':
-          if (!flags.quiet) console.log(`  ${pc.green('\u2713')} ${pc.dim(chunk.content)}`)
-          break
-        case 'text':
-          if (!hasText && !flags.quiet) {
-            process.stdout.write('\n')
-          }
-          if (md) {
-            const rendered = md.feed(chunk.content)
-            if (rendered) process.stdout.write(rendered)
-          } else {
-            process.stdout.write(chunk.content)
-          }
-          hasText = true
-          break
-        case 'error':
-          console.error(pc.red(`Error: ${chunk.content}`))
-          break
-        case 'done':
-          if (md) { const f = md.flush(); if (f) process.stdout.write(f) }
-          if (hasText) process.stdout.write('\n')
-          break
-      }
-    }
-  } else {
-    // Conversational/lightweight
-    for await (const chunk of runtime.chatStream(prompt)) {
-      if (chunk.type === 'text') {
+          console.log(`  ${pc.yellow('\u2699')} ${pc.dim(chunk.content)}`)
+        }
+        break
+      case 'status':
+        if (!flags.quiet) console.log(`  ${pc.green('\u2713')} ${pc.dim(chunk.content)}`)
+        break
+      case 'text':
+        if (!hasText && !flags.quiet) {
+          process.stdout.write('\n')
+        }
         if (md) {
           const rendered = md.feed(chunk.content)
           if (rendered) process.stdout.write(rendered)
         } else {
           process.stdout.write(chunk.content)
         }
-      } else if (chunk.type === 'error') {
+        hasText = true
+        break
+      case 'error':
         console.error(pc.red(`Error: ${chunk.content}`))
-      }
+        break
+      case 'done':
+        if (md) { const f = md.flush(); if (f) process.stdout.write(f) }
+        if (hasText) process.stdout.write('\n')
+        break
     }
-    if (md) { const f = md.flush(); if (f) process.stdout.write(f) }
-    process.stdout.write('\n')
   }
 
   // Distill after running
@@ -375,24 +367,14 @@ async function listSkills() {
   console.log()
   console.log(`  ${pc.bold('Built-in Skills')}:`)
   for (const s of builtins) {
-    const tier = s.complexity === 'autonomous'
-      ? pc.yellow('[opus+tools]')
-      : s.complexity === 'lightweight'
-        ? pc.dim('[haiku]')
-        : pc.blue('[sonnet]')
-    console.log(`    ${pc.cyan(s.id)}${' '.repeat(Math.max(1, 16 - s.id.length))}${s.description} ${tier}`)
+    console.log(`    ${pc.cyan(s.id)}${' '.repeat(Math.max(1, 16 - s.id.length))}${s.description}`)
   }
 
   if (custom.length > 0) {
     console.log()
     console.log(`  ${pc.bold('Custom Skills')}:`)
     for (const s of custom) {
-      const tier = s.complexity === 'autonomous'
-        ? pc.yellow('[opus+tools]')
-        : s.complexity === 'lightweight'
-          ? pc.dim('[haiku]')
-          : pc.blue('[sonnet]')
-      console.log(`    ${pc.cyan(s.id)}${' '.repeat(Math.max(1, 16 - s.id.length))}${s.description} ${tier}`)
+      console.log(`    ${pc.cyan(s.id)}${' '.repeat(Math.max(1, 16 - s.id.length))}${s.description}`)
     }
   }
 
@@ -761,6 +743,9 @@ async function manageMail(flags: CliFlags) {
         console.log(`    Processed: ${result.processed}`)
         console.log(`    Files written: ${result.filesWritten}`)
         console.log(`    Noise skipped: ${result.skippedNoise}`)
+        if (result.archived > 0) {
+          console.log(`    Archived: ${result.archived}`)
+        }
         if (result.errors > 0) {
           console.log(`    ${pc.red(`Errors: ${result.errors}`)}`)
         }
@@ -771,6 +756,94 @@ async function manageMail(flags: CliFlags) {
             console.log(`      ${type}: ${count}`)
           }
         }
+        console.log()
+
+        // Auto-sync inbox to pgvector after processing emails
+        if (!dryRun && result.filesWritten > 0) {
+          console.log(`  ${pc.bold('Syncing inbox to knowledge base...')}`)
+          console.log()
+          try {
+            const { syncVault, loadVaultConfigs } = await import('./runtime/vault-sync.js')
+            const { createEmbeddingAdapter } = await import('./adapters/embeddings/index.js')
+            const { loadConfig } = await import('./config.js')
+            const config = loadConfig()
+            const dataEngine = config.infrastructure?.dataEngine ?? 'none'
+
+            const embeddings = createEmbeddingAdapter()
+            if (!embeddings) {
+              console.log(`  ${pc.yellow('⚠')} No embedding API configured — skipping vectorization`)
+            } else {
+              // Get data adapter
+              let dataAdapter
+              if (dataEngine === 'supabase' || (process.env.SUPABASE_URL && process.env.SUPABASE_KEY)) {
+                const { SupabaseAdapter } = await import('./adapters/data/supabase.js')
+                const adapter = new SupabaseAdapter({ url: process.env.SUPABASE_URL!, key: process.env.SUPABASE_KEY! })
+                const initResult = await adapter.init()
+                if (initResult.success) dataAdapter = adapter
+              }
+
+              if (!dataAdapter) {
+                console.log(`  ${pc.yellow('⚠')} No data adapter available — skipping vectorization`)
+              } else {
+                // Sync only inbox folders from vault configs
+                const vaultConfigs = loadVaultConfigs()
+                for (const vc of vaultConfigs) {
+                  const inboxConfig = {
+                    ...vc,
+                    folders: vc.folders.filter(f => f.startsWith('_inbox')),
+                  }
+                  if (inboxConfig.folders.length === 0) continue
+
+                  const stats = await syncVault(inboxConfig, dataAdapter, embeddings, (msg) => {
+                    console.log(`  ${pc.dim(msg)}`)
+                  })
+                  console.log(`  ${pc.green('✓')} Synced ${stats.filesSynced} files, ${stats.chunksCreated} chunks to ${vc.name}`)
+                }
+              }
+            }
+          } catch (err) {
+            console.error(`  ${pc.yellow('⚠')} Vault sync failed: ${err instanceof Error ? err.message : String(err)}`)
+          }
+          console.log()
+        }
+      } catch (err) {
+        console.error(`  ${pc.red('✗')} ${err instanceof Error ? err.message : String(err)}`)
+        process.exit(1)
+      }
+      break
+    }
+
+    case 'archive': {
+      const { join } = await import('node:path')
+      const { HUGHMANN_HOME } = await import('./config.js')
+      const { loadEnvFile } = await import('./util/env.js')
+      loadEnvFile(join(HUGHMANN_HOME, '.env'))
+
+      const { findElleMailbox, archiveMessages } = await import('./mail/mail-reader.js')
+
+      const countIdx = flags.args.indexOf('--count')
+      const count = countIdx !== -1 ? parseInt(flags.args[countIdx + 1], 10) : 500
+
+      console.log()
+      console.log(`  ${pc.bold('Elle Mail Archiver')}`)
+      console.log(`  Archiving newest ${count} messages from Elle...`)
+      console.log()
+
+      try {
+        const mailbox = await findElleMailbox()
+        if (!mailbox) {
+          console.error(`  ${pc.red('✗')} Could not find Elle mailbox`)
+          process.exit(1)
+        }
+        console.log(`  Found Elle in account: ${mailbox.account}`)
+
+        // Build index array: 1 through count
+        const indexes = Array.from({ length: count }, (_, i) => i + 1)
+        const archived = await archiveMessages(mailbox.ref, indexes, (msg) => {
+          console.log(`  ${pc.dim(msg)}`)
+        })
+        console.log()
+        console.log(`  ${pc.bold('Done')}: Archived ${archived} messages`)
         console.log()
       } catch (err) {
         console.error(`  ${pc.red('✗')} ${err instanceof Error ? err.message : String(err)}`)
@@ -805,12 +878,14 @@ async function manageMail(flags: CliFlags) {
     }
 
     default: {
-      console.log(`  ${pc.bold('Usage')}: hughmann mail [process|status]`)
+      console.log(`  ${pc.bold('Usage')}: hughmann mail [process|archive|status]`)
       console.log()
-      console.log(`    ${pc.cyan('process')}           Process new emails from Elle ${pc.dim('(default)')}`)
-      console.log(`    ${pc.cyan('process --dry-run')} Classify only, no files written`)
-      console.log(`    ${pc.cyan('process --limit N')} Process at most N emails`)
-      console.log(`    ${pc.cyan('status')}            Show last run time + total processed`)
+      console.log(`    ${pc.cyan('process')}              Process new emails from Elle ${pc.dim('(default)')}`)
+      console.log(`    ${pc.cyan('process --dry-run')}    Classify only, no files written`)
+      console.log(`    ${pc.cyan('process --limit N')}    Process at most N emails`)
+      console.log(`    ${pc.cyan('archive')}              Move Elle messages to Archive`)
+      console.log(`    ${pc.cyan('archive --count N')}    Archive N newest messages ${pc.dim('(default 500)')}`)
+      console.log(`    ${pc.cyan('status')}               Show last run time + total processed`)
       console.log()
     }
   }
@@ -896,6 +971,139 @@ async function manageVault(flags: CliFlags) {
   console.log()
 }
 
+/**
+ * `hughmann tasks [list|create|done|backlog|blocked]`
+ */
+async function manageTasks(flags: CliFlags) {
+  const runtime = await bootRuntime({ quiet: true })
+  if (!runtime.data) {
+    console.error(`  ${pc.red('\u2717')} No data adapter configured. Tasks require a database.`)
+    process.exit(1)
+  }
+
+  const subcommand = flags.args[0] ?? 'list'
+
+  switch (subcommand) {
+    case 'list': {
+      const tasks = await runtime.data.listTasks({ status: ['todo', 'in_progress', 'blocked'] })
+      if (tasks.length === 0) {
+        console.log(`  ${pc.dim('No active tasks. Create one with: hughmann tasks create "title"')}`)
+        return
+      }
+      console.log()
+      const grouped = new Map<string, typeof tasks>()
+      for (const t of tasks) {
+        const group = grouped.get(t.status) ?? []
+        group.push(t)
+        grouped.set(t.status, group)
+      }
+      for (const [status, group] of grouped) {
+        const label = status === 'in_progress' ? pc.yellow('In Progress')
+          : status === 'blocked' ? pc.red('Blocked')
+          : pc.green('To Do')
+        console.log(`  ${pc.bold(label)}:`)
+        for (const t of group) {
+          const type = t.task_type !== 'STANDARD' ? pc.cyan(`[${t.task_type}]`) : ''
+          const domain = t.domain ? pc.dim(`(${t.domain})`) : ''
+          const prio = t.priority <= 1 ? pc.red(`P${t.priority}`) : pc.dim(`P${t.priority}`)
+          console.log(`    ${prio} ${type} ${t.title} ${domain} ${pc.dim(t.id.slice(0, 8))}`)
+        }
+      }
+      console.log()
+      break
+    }
+
+    case 'create': {
+      const title = flags.args.slice(1).filter(a => !a.startsWith('--')).join(' ')
+      if (!title) {
+        console.error(`  ${pc.red('Usage')}: hughmann tasks create "title" [--domain x] [--type MIT] [--priority 2]`)
+        process.exit(1)
+      }
+
+      const domainIdx = flags.args.indexOf('--domain')
+      const typeIdx = flags.args.indexOf('--type')
+      const prioIdx = flags.args.indexOf('--priority')
+
+      const task = await runtime.data.createTask({
+        title,
+        domain: domainIdx !== -1 ? flags.args[domainIdx + 1] : undefined,
+        task_type: typeIdx !== -1 ? flags.args[typeIdx + 1] as 'MUST' | 'MIT' | 'BIG_ROCK' | 'STANDARD' : undefined,
+        priority: prioIdx !== -1 ? parseInt(flags.args[prioIdx + 1], 10) : undefined,
+      })
+
+      console.log(`  ${pc.green('\u2713')} Created: ${task.title} (${task.id.slice(0, 8)}) [${task.task_type} P${task.priority}]`)
+      break
+    }
+
+    case 'done': {
+      const id = flags.args[1]
+      if (!id) {
+        console.error(`  ${pc.red('Usage')}: hughmann tasks done <id> ["summary"]`)
+        process.exit(1)
+      }
+
+      // Find task by partial ID match
+      const allTasks = await runtime.data.listTasks()
+      const match = allTasks.find(t => t.id.startsWith(id))
+      if (!match) {
+        console.error(`  ${pc.red('No task found matching')}: ${id}`)
+        process.exit(1)
+      }
+
+      const summary = flags.args.slice(2).join(' ') || undefined
+      const task = await runtime.data.completeTask(match.id, summary)
+      if (task) {
+        console.log(`  ${pc.green('\u2713')} Completed: ${task.title}`)
+      }
+      break
+    }
+
+    case 'backlog': {
+      const tasks = await runtime.data.listTasks({ status: 'backlog' })
+      if (tasks.length === 0) {
+        console.log(`  ${pc.dim('No backlog tasks.')}`)
+        return
+      }
+      console.log()
+      console.log(`  ${pc.bold('Backlog')} (${tasks.length}):`)
+      for (const t of tasks) {
+        const type = t.task_type !== 'STANDARD' ? pc.cyan(`[${t.task_type}]`) : ''
+        const domain = t.domain ? pc.dim(`(${t.domain})`) : ''
+        console.log(`    P${t.priority} ${type} ${t.title} ${domain} ${pc.dim(t.id.slice(0, 8))}`)
+      }
+      console.log()
+      break
+    }
+
+    case 'blocked': {
+      const tasks = await runtime.data.listTasks({ status: 'blocked' })
+      if (tasks.length === 0) {
+        console.log(`  ${pc.dim('No blocked tasks.')}`)
+        return
+      }
+      console.log()
+      console.log(`  ${pc.bold(pc.red('Blocked'))} (${tasks.length}):`)
+      for (const t of tasks) {
+        const type = t.task_type !== 'STANDARD' ? pc.cyan(`[${t.task_type}]`) : ''
+        console.log(`    ${type} ${t.title} ${pc.dim(t.id.slice(0, 8))}`)
+      }
+      console.log()
+      break
+    }
+
+    default: {
+      console.log(`  ${pc.bold('Usage')}: hughmann tasks [list|create|done|backlog|blocked]`)
+      console.log()
+      console.log(`    ${pc.cyan('list')}              Show active tasks (todo, in_progress, blocked) ${pc.dim('(default)')}`)
+      console.log(`    ${pc.cyan('create "title"')}    Create a task ${pc.dim('[--domain x] [--type MIT] [--priority 2]')}`)
+      console.log(`    ${pc.cyan('done <id>')}         Mark a task as complete ${pc.dim('[summary]')}`)
+      console.log(`    ${pc.cyan('backlog')}           Show backlog tasks`)
+      console.log(`    ${pc.cyan('blocked')}           Show blocked tasks`)
+      console.log()
+    }
+  }
+}
+
 // ─── Usage ──────────────────────────────────────────────────────────────────
 
 function showUsage() {
@@ -909,6 +1117,8 @@ function showUsage() {
   console.log(`    ${pc.cyan('<skill>')}           Shorthand for run ${pc.dim('(e.g. hughmann morning)')}`)
   console.log(`    ${pc.cyan('skills')}            List available skills`)
   console.log(`    ${pc.cyan('domains')}           List configured domains`)
+  console.log(`    ${pc.cyan('focus')}             Strategic planning session ${pc.dim('(15-min collaborative planning)')}`)
+  console.log(`    ${pc.cyan('tasks')}             Manage task queue ${pc.dim('(list|create|done|backlog|blocked)')}`)
   console.log(`    ${pc.cyan('mail')}              Process Elle mailbox emails ${pc.dim('(process|status)')}`)
   console.log(`    ${pc.cyan('vault sync')}        Sync Obsidian vaults to database`)
   console.log(`    ${pc.cyan('trigger')}           Manage Trigger.dev ${pc.dim('(dev|deploy|sync)')}`)

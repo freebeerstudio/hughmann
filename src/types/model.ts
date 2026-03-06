@@ -1,8 +1,5 @@
-export type TaskComplexity = 'lightweight' | 'conversational' | 'autonomous'
-
 export interface ModelRequest {
   messages: ModelMessage[]
-  complexity: TaskComplexity
   provider?: string
   domain?: string
   stream?: boolean
@@ -40,7 +37,8 @@ export interface ToolOptions {
   maxTurns?: number
   allowedTools?: string[]
   disallowedTools?: string[]
-  mcpServers?: Record<string, McpServerConfig>
+  builtinTools?: string[]  // Built-in tool names to enable; [] = none; undefined = all
+  mcpServers?: Record<string, McpServerConfig | unknown>
 }
 
 export interface McpServerConfig {

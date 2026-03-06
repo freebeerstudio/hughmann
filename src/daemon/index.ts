@@ -16,6 +16,8 @@ import { join } from 'node:path'
 import { HUGHMANN_HOME } from '../config.js'
 import { boot } from '../runtime/boot.js'
 import type { Runtime } from '../runtime/runtime.js'
+import { createStats, canExecuteTask, recordSuccess, recordFailure, getStatsSummary, DEFAULT_GUARDRAIL_CONFIG, type DaemonStats, type GuardrailConfig } from './guardrails.js'
+import type { Task } from '../types/tasks.js'
 
 const DAEMON_DIR = join(HUGHMANN_HOME, 'daemon')
 const INBOX_DIR = join(HUGHMANN_HOME, 'inbox')
@@ -70,6 +72,10 @@ export async function startDaemon(): Promise<void> {
   await runtime.initSession()
   log(`Daemon started (PID: ${process.pid})`)
 
+  // Initialize guardrails for autonomous task execution
+  const stats = createStats()
+  const guardrailConfig = DEFAULT_GUARDRAIL_CONFIG
+
   // Load schedule
   const schedule = loadSchedule()
   if (schedule.length > 0) {
@@ -114,6 +120,9 @@ export async function startDaemon(): Promise<void> {
 
       // 3. Process queue
       await processQueue(runtime)
+
+      // 4. Process task queue (autonomous task execution with guardrails)
+      await processTaskQueue(runtime, stats, guardrailConfig)
 
       // Periodic mail check (7am-6pm only)
       const hour = new Date().getHours()
@@ -277,7 +286,7 @@ async function processInbox(runtime: Runtime): Promise<void> {
 
       // Use the file content as a task
       const chunks: string[] = []
-      for await (const chunk of runtime.doTaskStream(content, { maxTurns: 15 })) {
+      for await (const chunk of runtime.doTaskStream(content, { maxTurns: 30 })) {
         if (chunk.type === 'text') chunks.push(chunk.content)
       }
 
@@ -329,7 +338,7 @@ async function processQueue(runtime: Runtime): Promise<void> {
           break
         case 'task': {
           const chunks: string[] = []
-          for await (const chunk of runtime.doTaskStream(task.content, { maxTurns: 15 })) {
+          for await (const chunk of runtime.doTaskStream(task.content, { maxTurns: 30 })) {
             if (chunk.type === 'text') chunks.push(chunk.content)
           }
           const result = chunks.join('')
@@ -363,14 +372,10 @@ async function executeSkill(runtime: Runtime, skillId: string): Promise<void> {
     try { runtime.setDomain(skill.domain) } catch { /* proceed */ }
   }
 
+  // All skills use doTaskStream — tools available, model chooses whether to use them
   const chunks: string[] = []
-  if (skill.complexity === 'autonomous') {
-    for await (const chunk of runtime.doTaskStream(skill.prompt, { maxTurns: skill.maxTurns })) {
-      if (chunk.type === 'text') chunks.push(chunk.content)
-    }
-  } else {
-    const response = await runtime.chat(skill.prompt)
-    chunks.push(response)
+  for await (const chunk of runtime.doTaskStream(skill.prompt)) {
+    if (chunk.type === 'text') chunks.push(chunk.content)
   }
 
   const result = chunks.join('')
@@ -484,6 +489,128 @@ async function runInboxSync(runtime: Runtime): Promise<void> {
   } catch (err) {
     log(`Inbox vault sync failed: ${err instanceof Error ? err.message : String(err)}`)
   }
+}
+
+/** Autonomous task execution from the task database */
+async function processTaskQueue(
+  runtime: Runtime,
+  stats: DaemonStats,
+  config: GuardrailConfig,
+): Promise<void> {
+  if (!runtime.data) return
+
+  // Check guardrails
+  const check = canExecuteTask(stats, config)
+  if (!check.allowed) return // Silently skip — not an error, just not time yet
+
+  // Get next available task
+  const tasks = await runtime.data.listTasks({ status: 'todo', limit: 10 })
+  if (tasks.length === 0) return
+
+  // Select best task: sort by priority → type weight → created_at
+  const typeWeight: Record<string, number> = { MUST: 0, MIT: 1, BIG_ROCK: 2, STANDARD: 3 }
+  const sorted = tasks.sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority
+    const wa = typeWeight[a.task_type] ?? 3
+    const wb = typeWeight[b.task_type] ?? 3
+    if (wa !== wb) return wa - wb
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  })
+
+  const task = sorted[0]
+  log(`[TaskQueue] Picking up task: "${task.title}" (${task.id.slice(0, 8)}) [${task.task_type} P${task.priority}]`)
+
+  // Mark as in_progress
+  await runtime.data.updateTask(task.id, { status: 'in_progress' })
+
+  // Switch domain if task has one
+  const prevDomain = runtime.activeDomain
+  if (task.domain) {
+    try { runtime.setDomain(task.domain) } catch { /* proceed */ }
+  }
+
+  // Build task prompt with project context and memories
+  const prompt = await buildTaskPrompt(task, runtime)
+
+  try {
+    const chunks: string[] = []
+    for await (const chunk of runtime.doTaskStream(prompt, {
+      maxTurns: config.maxTurnsPerTask,
+      cwd: task.cwd ?? undefined,
+    })) {
+      if (chunk.type === 'text') chunks.push(chunk.content)
+    }
+
+    const result = chunks.join('')
+    const summary = result.length > 500 ? result.slice(0, 500) + '...' : result
+
+    // Mark complete
+    await runtime.data.completeTask(task.id, summary || 'Task completed')
+    recordSuccess(stats)
+    log(`[TaskQueue] Completed: "${task.title}" — ${getStatsSummary(stats)}`)
+
+    // Log result
+    logResult(`task-${task.id.slice(0, 8)}`, `# ${task.title}\n\n${result}`)
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err)
+    await runtime.data.updateTask(task.id, { status: 'blocked' })
+    recordFailure(stats)
+    log(`[TaskQueue] Failed: "${task.title}" — ${errorMsg} — ${getStatsSummary(stats)}`)
+
+    // Record gap for self-improvement
+    import('../runtime/gap-analyzer.js').then(({ analyzeGapFromFailure }) =>
+      analyzeGapFromFailure(task, errorMsg, runtime.data!).catch(() => {})
+    ).catch(() => {})
+  }
+
+  // Restore domain
+  if (task.domain && prevDomain !== runtime.activeDomain) {
+    runtime.setDomain(prevDomain)
+  }
+}
+
+async function buildTaskPrompt(task: Task, runtime: Runtime): Promise<string> {
+  let prompt = `Execute the following task:\n\n**Title**: ${task.title}\n`
+  if (task.description) prompt += `**Description**: ${task.description}\n`
+  if (task.project) prompt += `**Project**: ${task.project}\n`
+  if (task.domain) prompt += `**Domain**: ${task.domain}\n`
+  if (task.due_date) prompt += `**Due**: ${task.due_date}\n`
+
+  // Load project context if task has a project_id
+  if (task.project_id && runtime.data) {
+    try {
+      const project = await runtime.data.getProject(task.project_id)
+      if (project) {
+        prompt += `\n**Project Context**:\n`
+        prompt += `  Name: ${project.name}\n`
+        if (project.quarterly_goal) prompt += `  Quarterly Goal: ${project.quarterly_goal}\n`
+        if (project.goals.length > 0) prompt += `  Goals: ${project.goals.join('; ')}\n`
+        const activeMilestones = project.milestones.filter(m => !m.completed)
+        if (activeMilestones.length > 0) {
+          prompt += `  Active Milestones: ${activeMilestones.map(m => m.title).join(', ')}\n`
+        }
+      }
+    } catch {
+      // Best-effort — don't block task execution
+    }
+  }
+
+  // Search semantic memory for task relevance
+  try {
+    const memories = await runtime.memory.searchSemantic(task.title, { limit: 3 })
+    if (memories.length > 0) {
+      prompt += `\n**Relevant Memories**:\n`
+      for (const m of memories) {
+        const truncated = m.content.length > 300 ? m.content.slice(0, 300) + '...' : m.content
+        prompt += `- ${truncated}\n`
+      }
+    }
+  } catch {
+    // Best-effort
+  }
+
+  prompt += `\nComplete this task thoroughly. When done, provide a summary of what was accomplished.`
+  return prompt
 }
 
 function cleanup(): void {

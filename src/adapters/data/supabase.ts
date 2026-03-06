@@ -1,5 +1,8 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { randomUUID } from 'node:crypto'
 import type { DataAdapter } from './types.js'
+import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, Milestone } from '../../types/projects.js'
 
 export interface SupabaseConfig {
   url: string
@@ -407,6 +410,267 @@ export class SupabaseAdapter implements DataAdapter {
       lastModified: data.last_modified,
     }
   }
+
+  // ─── Tasks ──────────────────────────────────────────────────────────────
+
+  async listTasks(filters?: TaskFilters): Promise<Task[]> {
+    if (!this.ready) return []
+
+    let query = this.client
+      .from('tasks')
+      .select('*')
+      .order('priority', { ascending: true })
+      .order('created_at', { ascending: true })
+
+    if (filters?.status) {
+      if (Array.isArray(filters.status)) {
+        query = query.in('status', filters.status)
+      } else {
+        query = query.eq('status', filters.status)
+      }
+    }
+    if (filters?.domain) {
+      query = query.eq('domain', filters.domain)
+    }
+    if (filters?.project) {
+      query = query.eq('project', filters.project)
+    }
+    if (filters?.task_type) {
+      if (Array.isArray(filters.task_type)) {
+        query = query.in('task_type', filters.task_type)
+      } else {
+        query = query.eq('task_type', filters.task_type)
+      }
+    }
+    if (filters?.limit) {
+      query = query.limit(filters.limit)
+    }
+
+    const { data } = await query
+    return (data ?? []) as Task[]
+  }
+
+  async createTask(input: CreateTaskInput): Promise<Task> {
+    const now = new Date().toISOString()
+    const task: Task = {
+      id: randomUUID(),
+      title: input.title,
+      description: input.description ?? null,
+      status: input.status ?? 'todo',
+      task_type: input.task_type ?? 'STANDARD',
+      domain: input.domain ?? null,
+      project: input.project ?? null,
+      project_id: input.project_id ?? null,
+      priority: input.priority ?? 3,
+      due_date: input.due_date ?? null,
+      cwd: input.cwd ?? null,
+      created_at: now,
+      updated_at: now,
+      completed_at: null,
+      completion_notes: null,
+    }
+
+    await this.client.from('tasks').insert(task)
+    return task
+  }
+
+  async updateTask(id: string, input: UpdateTaskInput): Promise<Task | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('tasks')
+      .update({ ...input, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select('*')
+      .single()
+
+    return (data as Task) ?? null
+  }
+
+  async completeTask(id: string, notes?: string): Promise<Task | null> {
+    if (!this.ready) return null
+
+    const now = new Date().toISOString()
+    const { data } = await this.client
+      .from('tasks')
+      .update({
+        status: 'done',
+        completed_at: now,
+        updated_at: now,
+        completion_notes: notes ?? null,
+      })
+      .eq('id', id)
+      .select('*')
+      .single()
+
+    return (data as Task) ?? null
+  }
+
+  async getTask(id: string): Promise<Task | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('tasks')
+      .select('*')
+      .eq('id', id)
+      .single()
+
+    return (data as Task) ?? null
+  }
+
+  // ─── Projects ──────────────────────────────────────────────────────────────
+
+  async listProjects(filters?: ProjectFilters): Promise<Project[]> {
+    if (!this.ready) return []
+
+    let query = this.client
+      .from('projects')
+      .select('*')
+      .order('priority', { ascending: true })
+      .order('created_at', { ascending: true })
+
+    if (filters?.domain) {
+      query = query.eq('domain', filters.domain)
+    }
+    if (filters?.status) {
+      if (Array.isArray(filters.status)) {
+        query = query.in('status', filters.status)
+      } else {
+        query = query.eq('status', filters.status)
+      }
+    }
+    if (filters?.limit) {
+      query = query.limit(filters.limit)
+    }
+
+    const { data } = await query
+    return (data ?? []).map(parseProject)
+  }
+
+  async createProject(input: CreateProjectInput): Promise<Project> {
+    const now = new Date().toISOString()
+    const slug = input.slug ?? input.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    const milestones: Milestone[] = (input.milestones ?? []).map(m => ({
+      id: randomUUID(),
+      title: m.title,
+      target_date: m.target_date ?? null,
+      completed: false,
+      completed_at: null,
+    }))
+
+    const row = {
+      id: randomUUID(),
+      name: input.name,
+      slug,
+      description: input.description ?? null,
+      domain: input.domain ?? null,
+      status: input.status ?? 'planning',
+      goals: input.goals ?? [],
+      quarterly_goal: input.quarterly_goal ?? null,
+      milestones,
+      priority: input.priority ?? 3,
+      created_at: now,
+      updated_at: now,
+      completed_at: null,
+      metadata: input.metadata ?? {},
+    }
+
+    await this.client.from('projects').insert(row)
+    return row as Project
+  }
+
+  async updateProject(id: string, input: UpdateProjectInput): Promise<Project | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('projects')
+      .update({ ...input, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select('*')
+      .single()
+
+    return data ? parseProject(data) : null
+  }
+
+  async getProject(id: string): Promise<Project | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('projects')
+      .select('*')
+      .eq('id', id)
+      .single()
+
+    return data ? parseProject(data) : null
+  }
+
+  async getProjectBySlug(slug: string): Promise<Project | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('projects')
+      .select('*')
+      .eq('slug', slug)
+      .single()
+
+    return data ? parseProject(data) : null
+  }
+
+  // ─── Planning Sessions ─────────────────────────────────────────────────────
+
+  async savePlanningSession(record: Omit<PlanningSessionRecord, 'id' | 'created_at'>): Promise<string> {
+    const id = randomUUID()
+    await this.client.from('planning_sessions').insert({
+      id,
+      ...record,
+    })
+    return id
+  }
+
+  async getRecentPlanningSessions(limit = 5): Promise<PlanningSessionRecord[]> {
+    if (!this.ready) return []
+
+    const { data } = await this.client
+      .from('planning_sessions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit)
+
+    return (data ?? []) as PlanningSessionRecord[]
+  }
+
+  async getLatestPlanningSession(): Promise<PlanningSessionRecord | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('planning_sessions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single()
+
+    return (data as PlanningSessionRecord) ?? null
+  }
+}
+
+/** Parse a Supabase row into a typed Project (handles JSONB arrays) */
+function parseProject(row: Record<string, unknown>): Project {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    slug: String(row.slug),
+    description: row.description != null ? String(row.description) : null,
+    domain: row.domain != null ? String(row.domain) : null,
+    status: String(row.status) as Project['status'],
+    goals: Array.isArray(row.goals) ? row.goals as string[] : [],
+    quarterly_goal: row.quarterly_goal != null ? String(row.quarterly_goal) : null,
+    milestones: Array.isArray(row.milestones) ? row.milestones as Milestone[] : [],
+    priority: Number(row.priority),
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+    completed_at: row.completed_at != null ? String(row.completed_at) : null,
+    metadata: (row.metadata && typeof row.metadata === 'object') ? row.metadata as Record<string, unknown> : {},
+  }
 }
 
 // ─── Domain → Customer ID Mapping ───────────────────────────────────────────
@@ -535,6 +799,75 @@ CREATE TABLE IF NOT EXISTS context_docs (
   synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Tasks table
+CREATE TABLE IF NOT EXISTS tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  title TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('backlog', 'todo', 'in_progress', 'done', 'blocked')),
+  task_type TEXT NOT NULL DEFAULT 'STANDARD' CHECK (task_type IN ('MUST', 'MIT', 'BIG_ROCK', 'STANDARD')),
+  domain TEXT,
+  project TEXT,
+  priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
+  due_date TEXT,
+  cwd TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ,
+  completion_notes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+CREATE INDEX IF NOT EXISTS idx_tasks_domain ON tasks (domain);
+CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks (priority);
+CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks (task_type);
+
+-- Projects table
+CREATE TABLE IF NOT EXISTS projects (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL UNIQUE,
+  description TEXT,
+  domain TEXT,
+  status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'paused', 'completed', 'archived')),
+  goals JSONB NOT NULL DEFAULT '[]',
+  quarterly_goal TEXT,
+  milestones JSONB NOT NULL DEFAULT '[]',
+  priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ,
+  metadata JSONB NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_domain ON projects (domain);
+CREATE INDEX IF NOT EXISTS idx_projects_status ON projects (status);
+CREATE INDEX IF NOT EXISTS idx_projects_slug ON projects (slug);
+
+-- Planning sessions table
+CREATE TABLE IF NOT EXISTS planning_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id TEXT NOT NULL,
+  focus_area TEXT NOT NULL,
+  topics_covered JSONB NOT NULL DEFAULT '[]',
+  decisions_made JSONB NOT NULL DEFAULT '[]',
+  tasks_created JSONB NOT NULL DEFAULT '[]',
+  projects_touched JSONB NOT NULL DEFAULT '[]',
+  open_questions JSONB NOT NULL DEFAULT '[]',
+  next_steps JSONB NOT NULL DEFAULT '[]',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_planning_sessions_created ON planning_sessions (created_at DESC);
+
+-- Add project_id to tasks (optional FK)
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'project_id') THEN
+    ALTER TABLE tasks ADD COLUMN project_id UUID REFERENCES projects(id);
+    CREATE INDEX idx_tasks_project_id ON tasks (project_id);
+  END IF;
+END $$;
+
 -- Domain-to-customer mapping function
 CREATE OR REPLACE FUNCTION hughmann_customer_id(p_domain TEXT)
 RETURNS UUID AS $$
@@ -597,6 +930,9 @@ ALTER TABLE domain_notes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kb_nodes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kb_edges ENABLE ROW LEVEL SECURITY;
 ALTER TABLE context_docs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE planning_sessions ENABLE ROW LEVEL SECURITY;
 
 -- Allow all operations for service key
 DO $$ BEGIN
@@ -620,6 +956,15 @@ DO $$ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'context_docs' AND policyname = 'Allow all for service key') THEN
     CREATE POLICY "Allow all for service key" ON context_docs FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'tasks' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON tasks FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'projects' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON projects FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'planning_sessions' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON planning_sessions FOR ALL USING (true);
   END IF;
 END $$;
 `

@@ -51,6 +51,7 @@ Or using the development binary:
 | `set_domain` | Switch active domain | `domain` ("none" to clear) |
 | `get_status` | Current session info and system name | — |
 | `search_memory` | Semantic search or recent memories | `query?`, `count?`, `domain?` |
+| `search_knowledge` | Search knowledge base (Obsidian vaults) | `query`, `vault?`, `node_type?`, `count?` |
 | `distill` | Extract key facts from current session | — |
 | `do_task` | Autonomous task with tools | `task`, `max_turns?` |
 | `get_usage` | Token counts and costs | — |
@@ -200,10 +201,16 @@ To set up later:
 | `decisions` | Decision log with reasoning |
 | `domain_notes` | Per-domain context notes |
 | `memory_embeddings` | Vector embeddings for semantic search |
+| `kb_nodes` | Knowledge base documents (vault files with embeddings) |
+| `kb_edges` | Wikilink graph edges between kb_nodes |
+| `context_docs` | System context document versions |
+| `tasks` | Task queue for autonomous execution |
+| `projects` | Projects with goals and milestones |
+| `planning_sessions` | Strategic planning session records |
 
 ### Migration
 
-The migration creates all tables, the pgvector extension, an HNSW index for fast cosine similarity search, and a `search_memories()` RPC function.
+The migration creates all tables, the pgvector extension, RPC functions (`search_kb_nodes`, `search_memory_v2`), and row-level security policies.
 
 Supabase is optional. Without it, everything works locally with file-based sessions and memory.
 
@@ -312,6 +319,72 @@ The `search_memory` tool:
 - With a query: performs semantic vector search
 - Without a query: returns recent file-based memories
 - Supports domain filtering
+
+---
+
+## Vault Sync & Knowledge Search
+
+HughMann syncs Obsidian vault files to the database, generates vector embeddings, and injects relevant knowledge into every chat response.
+
+### How It Works
+
+1. **Sync** — `hughmann vault sync` walks configured vault folders, reads `.md` files
+2. **Embed** — Each file is embedded via the configured embedding API (first 2000 chars)
+3. **Store** — Documents go into `kb_nodes` with metadata; chunks into `memory_embeddings`
+4. **Link** — `[[wikilinks]]` are extracted and stored as `kb_edges` for graph traversal
+5. **Search** — On every chat message, HughMann embeds the user's query and retrieves the top 5 most relevant vault documents via cosine similarity
+6. **Inject** — Matching documents are included in the system prompt so the model can reference them
+
+### Vault Configuration
+
+Add to `~/.hughmann/.env`:
+
+```bash
+# Vault name comes from the env var prefix (VAULT_{NAME}_PATH)
+VAULT_OMNISSA_PATH=/Users/you/Vault_Omnissa/Vault_Omnissa
+VAULT_OMNISSA_FOLDERS=Customers,Products,Projects,Resources,Areas,_inbox
+
+VAULT_FBS_PATH=/Users/you/Vault_FBS
+VAULT_FBS_FOLDERS=Projects,Clients
+```
+
+Pattern: `VAULT_{NAME}_PATH` + `VAULT_{NAME}_FOLDERS` (comma-separated subfolder list).
+
+### CLI Usage
+
+```bash
+hughmann vault sync                 # Sync all configured vaults
+hughmann vault sync --vault omnissa # Sync one vault
+```
+
+### Daemon Integration
+
+The daemon automatically runs vault sync every 6 hours. After processing new emails via the mail pipeline, the daemon also triggers a targeted sync of the `_inbox/` folder.
+
+### Knowledge Search in Chat
+
+When you ask Hugh a question in chat mode, the system automatically:
+1. Embeds your message
+2. Searches `kb_nodes` filtered by the active domain (vault)
+3. Returns the top 5 results above similarity threshold 0.2
+4. Injects them into the system prompt as "Relevant Knowledge"
+
+This means Hugh can answer questions about your customers, support cases, meeting notes, and emails without you needing to specify where to look.
+
+### MCP Tool
+
+External clients can search the knowledge base via the `search_knowledge` tool:
+
+```json
+{
+  "tool": "search_knowledge",
+  "arguments": {
+    "query": "Austin Energy support cases",
+    "vault": "omnissa",
+    "count": 5
+  }
+}
+```
 
 ---
 

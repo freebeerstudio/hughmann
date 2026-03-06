@@ -20,6 +20,7 @@ Run from your terminal. The default command is `chat`.
 | `hughmann daemon` | Manage background daemon | `hughmann daemon start` |
 | `hughmann telegram` | Start Telegram bot | `hughmann telegram` |
 | `hughmann serve` | Start as MCP server (stdio) | `hughmann serve` |
+| `hughmann vault` | Sync Obsidian vaults to database | `hughmann vault sync` |
 | `hughmann migrate` | Print migration SQL (auto-detects Supabase/Turso) | `hughmann migrate` |
 | `hughmann migrate --apply` | Connect and create tables (auto-detects engine) | `hughmann migrate --apply` |
 
@@ -50,6 +51,13 @@ hughmann mail process               # Process new emails from Elle
 hughmann mail process --dry-run     # Classify only, no files written
 hughmann mail process --limit 10    # Process at most 10 emails
 hughmann mail status                # Show last run time + processed count
+```
+
+### Vault Subcommands
+
+```bash
+hughmann vault sync                 # Sync all configured vaults to database
+hughmann vault sync --vault omnissa # Sync a specific vault
 ```
 
 ### Daemon Subcommands

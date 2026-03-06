@@ -110,7 +110,7 @@ export interface MessageSummary {
 
 export async function listMessages(
   mailboxRef: string,
-  limit: number = 100,
+  limit: number = 500,
 ): Promise<MessageSummary[]> {
   const script = `
 tell application "Mail"
@@ -118,7 +118,7 @@ tell application "Mail"
   set msgCount to count of messages of mbox
   set maxCount to ${limit}
   if msgCount < maxCount then set maxCount to msgCount
-  set output to ""
+  set outputLines to {}
   repeat with i from 1 to maxCount
     set m to message i of mbox
     set msgId to message id of m
@@ -128,12 +128,13 @@ tell application "Mail"
     set isRead to read status of m
     set readLabel to "false"
     if isRead then set readLabel to "true"
-    set output to output & i & "${FIELD_DELIMITER}" & msgId & "${FIELD_DELIMITER}" & sndr & "${FIELD_DELIMITER}" & subj & "${FIELD_DELIMITER}" & (dt as string) & "${FIELD_DELIMITER}" & readLabel & linefeed
+    set end of outputLines to (i as text) & "${FIELD_DELIMITER}" & msgId & "${FIELD_DELIMITER}" & sndr & "${FIELD_DELIMITER}" & subj & "${FIELD_DELIMITER}" & (dt as string) & "${FIELD_DELIMITER}" & readLabel
   end repeat
-  return output
+  set AppleScript's text item delimiters to linefeed
+  return outputLines as text
 end tell`
 
-  const result = await runAppleScript(script, { timeout: 60_000 })
+  const result = await runAppleScript(script, { timeout: 300_000 })
   if (!result) return []
 
   const messages: MessageSummary[] = []
@@ -153,6 +154,68 @@ end tell`
   }
 
   return messages
+}
+
+// ---------------------------------------------------------------------------
+// archiveMessages
+// ---------------------------------------------------------------------------
+
+/**
+ * Archive messages from a mailbox by moving them to the account's Archive mailbox.
+ * Takes a list of message indexes to archive (from a prior listMessages call).
+ * Moves in reverse order so indexes don't shift.
+ *
+ * Returns the number of messages successfully archived.
+ */
+export async function archiveMessages(
+  mailboxRef: string,
+  indexes: number[],
+  onLog?: (msg: string) => void,
+): Promise<number> {
+  if (indexes.length === 0) return 0
+  const log = onLog ?? console.log.bind(console)
+
+  // Sort descending — archive from bottom up so indexes stay valid
+  const toArchive = [...indexes].sort((a, b) => b - a)
+  log(`Archiving ${toArchive.length} messages...`)
+
+  // Extract account name from the mailbox ref
+  const acctMatch = mailboxRef.match(/of account "([^"]+)"/)
+  const acctName = acctMatch ? acctMatch[1] : 'Exchange'
+
+  // Move messages one at a time via a loop in AppleScript
+  // (AppleScript requires variable assignment before `move`)
+  // Process in batches to report progress
+  const BATCH_SIZE = 25
+  let archived = 0
+
+  for (let i = 0; i < toArchive.length; i += BATCH_SIZE) {
+    const batch = toArchive.slice(i, i + BATCH_SIZE)
+    // Build a list of indexes and loop in AppleScript
+    const indexList = batch.join(', ')
+
+    const archiveScript = `
+tell application "Mail"
+  set mbox to ${mailboxRef}
+  set archiveBox to mailbox "Archive" of account "${acctName}"
+  set idxList to {${indexList}}
+  repeat with idx in idxList
+    set m to message idx of mbox
+    move m to archiveBox
+  end repeat
+end tell`
+
+    try {
+      await runAppleScript(archiveScript, { timeout: 120_000 })
+      archived += batch.length
+      log(`  Archived batch ${Math.floor(i / BATCH_SIZE) + 1}: ${batch.length} messages (${archived}/${toArchive.length})`)
+    } catch (err) {
+      log(`  ERROR archiving batch: ${err instanceof Error ? err.message : String(err)}`)
+      break
+    }
+  }
+
+  return archived
 }
 
 // ---------------------------------------------------------------------------

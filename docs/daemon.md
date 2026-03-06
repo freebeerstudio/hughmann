@@ -96,6 +96,42 @@ launchd captures output to:
 - `~/.hughmann/logs/<skillId>.log` — stdout
 - `~/.hughmann/logs/<skillId>.error.log` — stderr
 
+## Autonomous Task Execution
+
+The daemon picks up tasks from the database with `todo` status and executes them autonomously using the Opus model with full tool access.
+
+### Guardrails
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Max tasks per day | 5 | Prevents runaway execution |
+| Max turns per task | 30 | Limits agent loop depth |
+| Business hours only | 7am–6pm | No overnight execution |
+| Cooldown after failures | 3-strike | Pauses after 3 consecutive failures |
+
+### Self-Improvement on Failure
+
+When a task fails, the daemon automatically creates a `backlog` task on the permanent **Self-Improvement** project with the error details. These tasks are surfaced during `/focus` planning sessions for review. This happens without an LLM call — the failure metadata itself is the signal.
+
+Duplicate detection prevents recursive loops (e.g., "Investigate failure: Investigate failure: ...").
+
+## Automated Mail Processing
+
+The daemon checks for new emails in the Elle mailbox every 30 minutes during business hours (7am–6pm).
+
+- **Classification** — Each email is classified by Haiku (support, customer, meeting, etc.)
+- **Markdown** — Classified emails are written to the Obsidian vault's `_inbox/` folder
+- **Sync** — After new emails are written, the daemon triggers a vault sync of `_inbox/` to update embeddings
+- **State** — Processed message IDs are tracked in `~/.hughmann/daemon/mail-state.json` to prevent reprocessing
+
+Run manually with `hughmann mail process`. See [Mail Pipeline](mail-pipeline.md) for details.
+
+## Automated Vault Sync
+
+The daemon runs a full vault sync every 6 hours, updating `kb_nodes` and embeddings in Supabase. Targeted `_inbox/` syncs also run after mail processing.
+
+---
+
 ## Inbox Trigger Files
 
 Drop a `.md` or `.txt` file into `~/.hughmann/inbox/` and the daemon will process it as an autonomous task.
