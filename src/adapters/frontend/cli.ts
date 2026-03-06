@@ -3,6 +3,7 @@ import pc from 'picocolors'
 import type { Runtime } from '../../runtime/runtime.js'
 import type { Skill } from '../../runtime/skills.js'
 import { StreamMarkdownRenderer } from '../../util/markdown.js'
+import { generateWelcomeBriefing } from '../../runtime/welcome.js'
 
 const GOLD = (text: string) => `\x1b[38;2;200;140;60m${text}\x1b[0m`
 const DIM_COPPER = (text: string) => `\x1b[38;2;120;80;30m${text}\x1b[0m`
@@ -28,6 +29,24 @@ export async function startChatLoop(runtime: Runtime, firstBoot: boolean = false
     console.log(`  ${pc.dim(initResult.message)}`)
   }
   console.log()
+
+  // Welcome briefing — quick update on last session + system changes
+  if (!firstBoot) {
+    try {
+      const briefing = await generateWelcomeBriefing(runtime)
+      if (briefing) {
+        const md = new StreamMarkdownRenderer()
+        process.stdout.write(`  ${GOLD(systemName)} ${pc.dim('>')}\n\n`)
+        const rendered = md.feed(briefing)
+        if (rendered) process.stdout.write(rendered)
+        const remaining = md.flush()
+        if (remaining) process.stdout.write(remaining)
+        process.stdout.write('\n\n')
+      }
+    } catch {
+      // Best-effort — don't block chat startup
+    }
+  }
 
   // Start file watcher for auto-reload
   runtime.startWatching((result) => {
