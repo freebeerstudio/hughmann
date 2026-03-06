@@ -87,8 +87,9 @@ switch (flags.command) {
     break
   }
 
-  case 'skills': {
-    await listSkills()
+  case 'skills':
+  case 'skill': {
+    await manageSkills(flags)
     break
   }
 
@@ -369,31 +370,106 @@ async function runBuiltinSkill(skillId: string, flags: CliFlags) {
 }
 
 /**
- * `hughmann skills` — List all available skills
+ * `hughmann skill [list|search|install|remove]` — Manage skills
  */
-async function listSkills() {
-  const runtime = await bootRuntime({ quiet: true })
+async function manageSkills(flags: CliFlags) {
+  const sub = flags.args[0] ?? 'list'
 
-  const builtins = runtime.skills.listBuiltin()
-  const custom = runtime.skills.listCustom()
+  if (sub === 'list') {
+    const runtime = await bootRuntime({ quiet: true })
+    const builtins = runtime.skills.listBuiltin()
+    const custom = runtime.skills.listCustom()
 
-  console.log()
-  console.log(`  ${pc.bold('Built-in Skills')}:`)
-  for (const s of builtins) {
-    console.log(`    ${pc.cyan(s.id)}${' '.repeat(Math.max(1, 16 - s.id.length))}${s.description}`)
-  }
-
-  if (custom.length > 0) {
     console.log()
-    console.log(`  ${pc.bold('Custom Skills')}:`)
-    for (const s of custom) {
+    console.log(`  ${pc.bold('Built-in Skills')}:`)
+    for (const s of builtins) {
       console.log(`    ${pc.cyan(s.id)}${' '.repeat(Math.max(1, 16 - s.id.length))}${s.description}`)
     }
+
+    if (custom.length > 0) {
+      console.log()
+      console.log(`  ${pc.bold('Custom Skills')}:`)
+      for (const s of custom) {
+        console.log(`    ${pc.cyan(s.id)}${' '.repeat(Math.max(1, 16 - s.id.length))}${s.description}`)
+      }
+    }
+
+    console.log()
+    console.log(`  ${pc.bold('Run a skill')}:`)
+    console.log(`    ${pc.cyan('hughmann run <skill>')}    ${pc.dim('or just')}  ${pc.cyan('hughmann <skill>')}`)
+    console.log()
+    return
   }
 
+  if (sub === 'search') {
+    const query = flags.args.slice(1).join(' ')
+    if (!query) {
+      console.error('Usage: hughmann skill search <query>')
+      return
+    }
+    const { searchSkills, SKILL_REGISTRY } = await import('./runtime/skill-registry.js')
+    const results = query === '*' ? SKILL_REGISTRY : searchSkills(query)
+    if (results.length === 0) {
+      console.log(`  No skills found matching "${query}"`)
+      return
+    }
+    console.log()
+    for (const s of results) {
+      console.log(`  ${pc.cyan(s.id)}${' '.repeat(Math.max(1, 18 - s.id.length))}${s.description}`)
+      console.log(`  ${' '.repeat(18)}${pc.dim(`by ${s.author} — ${s.url}`)}`)
+    }
+    console.log()
+    console.log(`  ${pc.bold('Install')}: ${pc.cyan('hughmann skill install <id>')}`)
+    console.log()
+    return
+  }
+
+  if (sub === 'install') {
+    const target = flags.args[1]
+    if (!target) {
+      console.error('Usage: hughmann skill install <id|url>')
+      return
+    }
+    const { installSkill } = await import('./runtime/skill-registry.js')
+    const { HUGHMANN_HOME } = await import('./config.js')
+    const { join } = await import('node:path')
+    const skillsDir = join(HUGHMANN_HOME, 'skills')
+    console.log(`  Installing skill "${target}"...`)
+    const result = await installSkill(skillsDir, target)
+    if (result.success) {
+      console.log(`  ${pc.green('Installed')} skill "${result.id}" to ~/.hughmann/skills/${result.id}/`)
+      console.log(`  Run it with: ${pc.cyan(`hughmann ${result.id}`)}`)
+    } else {
+      console.error(`  ${pc.red('Error')}: ${result.error}`)
+    }
+    return
+  }
+
+  if (sub === 'remove') {
+    const target = flags.args[1]
+    if (!target) {
+      console.error('Usage: hughmann skill remove <id>')
+      return
+    }
+    const { HUGHMANN_HOME } = await import('./config.js')
+    const { join } = await import('node:path')
+    const { existsSync, rmSync } = await import('node:fs')
+    const skillDir = join(HUGHMANN_HOME, 'skills', target)
+    if (!existsSync(skillDir)) {
+      console.error(`  Skill "${target}" not found`)
+      return
+    }
+    rmSync(skillDir, { recursive: true, force: true })
+    console.log(`  ${pc.green('Removed')} skill "${target}"`)
+    return
+  }
+
+  console.log(`  ${pc.bold('Usage')}: hughmann skill <command>`)
   console.log()
-  console.log(`  ${pc.bold('Run a skill')}:`)
-  console.log(`    ${pc.cyan('hughmann run <skill>')}    ${pc.dim('or just')}  ${pc.cyan('hughmann <skill>')}`)
+  console.log(`    ${pc.cyan('list')}               List installed skills`)
+  console.log(`    ${pc.cyan('search <query>')}     Search the skill registry`)
+  console.log(`    ${pc.cyan('install <id|url>')}   Install a skill from registry or URL`)
+  console.log(`    ${pc.cyan('remove <id>')}        Remove an installed skill`)
   console.log()
 }
 
@@ -1128,7 +1204,7 @@ function showUsage() {
   console.log(`    ${pc.cyan('setup')}             Run onboarding / configuration`)
   console.log(`    ${pc.cyan('run <skill>')}       Run a skill non-interactively`)
   console.log(`    ${pc.cyan('<skill>')}           Shorthand for run ${pc.dim('(e.g. hughmann morning)')}`)
-  console.log(`    ${pc.cyan('skills')}            List available skills`)
+  console.log(`    ${pc.cyan('skill')}             Manage skills ${pc.dim('(list|search|install|remove)')}`)
   console.log(`    ${pc.cyan('domains')}           List configured domains`)
   console.log(`    ${pc.cyan('focus')}             Strategic planning session ${pc.dim('(15-min collaborative planning)')}`)
   console.log(`    ${pc.cyan('tasks')}             Manage task queue ${pc.dim('(list|create|done|backlog|blocked)')}`)
