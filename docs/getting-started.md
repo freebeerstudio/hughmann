@@ -6,19 +6,29 @@
 - **Claude Max subscription** (recommended, $0 per token via Claude OAuth) or an **OpenRouter API key**
 - **macOS** recommended for daemon/scheduling features (launchd)
 
-## Installation
+## Quick Start (npx)
 
 ```bash
-git clone https://github.com/your-org/hughmann.git
+npx create-hughmann
+```
+
+This runs the setup wizard — no git clone needed.
+
+## Install from Source
+
+```bash
+git clone https://github.com/freebeerstudio/hughmann.git
 cd hughmann
 npm install
+npm run setup
 ```
 
 ## Running Setup
 
+If you've already installed, re-run setup with:
+
 ```bash
-npm run setup
-# or: npx tsx src/cli.ts setup
+hughmann setup
 ```
 
 The setup wizard walks through five phases:
@@ -75,6 +85,7 @@ After onboarding, `~/.hughmann/` contains:
 │   ├── master-plan.md        # Goals and quarterly focus
 │   ├── capabilities.md       # What the system can do
 │   ├── growth.md             # How to expand capabilities
+│   ├── habits.md             # Daily habits for /habits skill
 │   └── domains/
 │       ├── work.md           # One file per domain
 │       └── personal.md
@@ -109,7 +120,18 @@ EMBEDDING_API_KEY=your-embedding-api-key
 TELEGRAM_BOT_TOKEN=your-bot-token
 ```
 
-Claude Max requires no API key — it authenticates via the Claude agent SDK's OAuth flow.
+### Claude Max OAuth
+
+Claude Max requires no API key. It uses the Claude Agent SDK's built-in OAuth flow:
+
+1. On first run, a browser window opens asking you to authorize HughMann
+2. You sign in with your Anthropic account (the one with the Max/Pro subscription)
+3. The SDK stores the OAuth token locally — you won't be prompted again
+4. All Claude calls use your subscription (no per-token cost)
+
+If you don't have a Claude subscription, use `OPENROUTER_API_KEY` instead.
+
+A `.env.example` file is included in the repo with all available env vars documented.
 
 ## First Conversation
 
@@ -147,7 +169,13 @@ HughMann automatically manages sessions:
 
 ## Global Install
 
-Build and link for system-wide access:
+Install globally from npm:
+
+```bash
+npm install -g create-hughmann
+```
+
+Or build and link from source:
 
 ```bash
 npm run build
