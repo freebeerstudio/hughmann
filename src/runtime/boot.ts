@@ -192,7 +192,7 @@ export async function boot(): Promise<BootResult> {
   if (dataAdapter) {
     try {
       const { createInternalToolServer } = await import('../tools/internal-tools.js')
-      internalToolServer = createInternalToolServer(dataAdapter, contextResult.store, contextWriter, memory)
+      internalToolServer = createInternalToolServer(dataAdapter, contextResult.store, contextWriter, memory, HUGHMANN_HOME)
       warnings.push('Internal tools available (tasks, projects, planning)')
     } catch {
       // Best-effort — internal tools are optional

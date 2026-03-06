@@ -12,6 +12,8 @@ import type { ContextWriter } from '../runtime/context-writer.js'
 import type { MemoryManager } from '../runtime/memory.js'
 import type { TaskStatus, TaskType } from '../types/tasks.js'
 import type { ProjectStatus } from '../types/projects.js'
+import { MCP_REGISTRY, findMatchingServers } from '../runtime/mcp-registry.js'
+import { addMcpServer, removeMcpServer } from '../runtime/mcp-config.js'
 
 /** Helper to create an error tool response instead of throwing */
 function errorResult(message: string) {
@@ -42,6 +44,7 @@ export function createInternalToolServer(
   context: ContextStore,
   writer?: ContextWriter,
   memory?: MemoryManager,
+  hughmannHome?: string,
 ) {
   // ─── Task Tools ────────────────────────────────────────────────────────────
 
@@ -520,9 +523,130 @@ export function createInternalToolServer(
     }
   )
 
+  // ─── MCP Management Tools ───────────────────────────────────────────────
+
+  const listAvailableMcpServers = tool(
+    'list_available_mcp_servers',
+    'List MCP servers available for auto-install. Optionally filter by a capability description to find relevant servers.',
+    {
+      query: z.string().optional().describe('Capability description to match against (e.g. "search the web", "manage github issues")'),
+    },
+    async (args) => {
+      if (args.query) {
+        const matches = findMatchingServers(args.query)
+        if (matches.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No MCP servers found matching "${args.query}".\n\nAll available servers:\n${Object.entries(MCP_REGISTRY).map(([id, e]) => `  ${id}: ${e.description}`).join('\n')}`,
+            }],
+          }
+        }
+        return {
+          content: [{
+            type: 'text' as const,
+            text: matches.map(e => {
+              const envNote = e.requiredEnvVars.length > 0
+                ? `\n    Required env vars: ${e.requiredEnvVars.join(', ')}`
+                : ''
+              const configNote = e.needsUserConfig ? '\n    Needs user configuration (paths, etc.)' : ''
+              return `  ${e.name} (${e.package})${envNote}${configNote}\n    ${e.description}`
+            }).join('\n\n'),
+          }],
+        }
+      }
+
+      const lines = Object.entries(MCP_REGISTRY).map(([id, entry]) => {
+        const envNote = entry.requiredEnvVars.length > 0
+          ? ` [requires: ${entry.requiredEnvVars.join(', ')}]`
+          : ''
+        return `  ${id}: ${entry.description}${envNote}`
+      })
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Available MCP servers:\n${lines.join('\n')}`,
+        }],
+      }
+    }
+  )
+
+  const installMcpServer = tool(
+    'install_mcp_server',
+    'Install an MCP server from the registry into mcp.json. The server will be available after the next session restart. For servers that need env vars, set them in ~/.hughmann/.env first.',
+    {
+      server_id: z.string().describe('Registry ID of the server to install (e.g. "github", "fetch", "brave-search")'),
+      env: z.record(z.string(), z.string()).optional().describe('Environment variables to set for this server'),
+      args: z.array(z.string()).optional().describe('Override default args (e.g. file paths for filesystem server)'),
+    },
+    async (args) => {
+      if (!hughmannHome) return errorResult('HughMann home directory not configured')
+
+      const entry = MCP_REGISTRY[args.server_id]
+      if (!entry) {
+        return errorResult(`Unknown server "${args.server_id}". Use list_available_mcp_servers to see options.`)
+      }
+
+      // Check required env vars
+      const missingVars = entry.requiredEnvVars.filter(v => !process.env[v] && !args.env?.[v])
+      if (missingVars.length > 0) {
+        return errorResult(
+          `Missing required environment variables for ${entry.name}: ${missingVars.join(', ')}\n` +
+          `Set them in ~/.hughmann/.env or pass them via the env parameter.`
+        )
+      }
+
+      const serverArgs = args.args ?? (entry.defaultArgs ? ['-y', entry.package, ...entry.defaultArgs] : ['-y', entry.package])
+      const finalArgs = serverArgs.includes(entry.package) ? serverArgs : ['-y', entry.package, ...serverArgs]
+
+      const config: { command: string; args: string[]; env?: Record<string, string> } = {
+        command: 'npx',
+        args: finalArgs,
+      }
+
+      if (args.env && Object.keys(args.env).length > 0) {
+        config.env = args.env as Record<string, string>
+      }
+
+      const added = addMcpServer(hughmannHome, args.server_id, config)
+      if (!added) {
+        return errorResult(`MCP server "${args.server_id}" is already installed.`)
+      }
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Installed MCP server: ${entry.name} (${entry.package})\n` +
+            `Config written to mcp.json.\n` +
+            `The server will be available after restarting the session.` +
+            (entry.needsUserConfig ? `\n\nNote: This server may need additional configuration (e.g. file paths). Check the args in mcp.json.` : ''),
+        }],
+      }
+    }
+  )
+
+  const uninstallMcpServer = tool(
+    'uninstall_mcp_server',
+    'Remove an MCP server from mcp.json.',
+    {
+      server_name: z.string().describe('Name of the server to remove from mcp.json'),
+    },
+    async (args) => {
+      if (!hughmannHome) return errorResult('HughMann home directory not configured')
+      const removed = removeMcpServer(hughmannHome, args.server_name)
+      if (!removed) return errorResult(`MCP server "${args.server_name}" not found in mcp.json.`)
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Removed MCP server "${args.server_name}" from mcp.json.`,
+        }],
+      }
+    }
+  )
+
   return createSdkMcpServer({
     name: 'hughmann',
-    version: '0.2.0',
+    version: '0.3.0',
     tools: [
       // Tasks
       listTasks, createTask, updateTask, completeTask,
@@ -532,6 +656,8 @@ export function createInternalToolServer(
       getPlanningContext, capturePlanningSummary,
       // Context
       updateMasterPlanSection,
+      // MCP management
+      listAvailableMcpServers, installMcpServer, uninstallMcpServer,
       // Utility
       getCurrentTime,
     ],

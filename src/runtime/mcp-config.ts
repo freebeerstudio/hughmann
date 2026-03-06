@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { McpServerConfig } from '../types/model.js'
 
@@ -79,6 +79,59 @@ export function loadMcpConfig(hughmannHome: string): { config: McpConfig; warnin
   } catch (err) {
     warnings.push(`Failed to parse mcp.json: ${err instanceof Error ? err.message : String(err)}`)
     return { config: { servers: {} }, warnings }
+  }
+}
+
+/**
+ * Add an MCP server to mcp.json. Creates the file if it doesn't exist.
+ * Returns true if added, false if a server with that name already exists.
+ */
+export function addMcpServer(
+  hughmannHome: string,
+  name: string,
+  config: { command: string; args?: string[]; env?: Record<string, string> },
+): boolean {
+  const configPath = join(hughmannHome, 'mcp.json')
+
+  let existing: Record<string, unknown> = { servers: {} }
+  if (existsSync(configPath)) {
+    try {
+      existing = JSON.parse(readFileSync(configPath, 'utf-8'))
+    } catch {
+      existing = { servers: {} }
+    }
+  }
+
+  const servers = (existing.servers ?? {}) as Record<string, unknown>
+  if (servers[name]) return false
+
+  servers[name] = {
+    command: config.command,
+    ...(config.args ? { args: config.args } : {}),
+    ...(config.env ? { env: config.env } : {}),
+  }
+
+  existing.servers = servers
+  writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8')
+  return true
+}
+
+/**
+ * Remove an MCP server from mcp.json. Returns true if removed.
+ */
+export function removeMcpServer(hughmannHome: string, name: string): boolean {
+  const configPath = join(hughmannHome, 'mcp.json')
+  if (!existsSync(configPath)) return false
+
+  try {
+    const existing = JSON.parse(readFileSync(configPath, 'utf-8'))
+    const servers = existing.servers as Record<string, unknown> | undefined
+    if (!servers || !servers[name]) return false
+    delete servers[name]
+    writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8')
+    return true
+  } catch {
+    return false
   }
 }
 

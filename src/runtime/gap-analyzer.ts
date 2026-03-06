@@ -10,6 +10,7 @@
 import type { ModelAdapter } from '../types/adapters.js'
 import type { DataAdapter } from '../adapters/data/types.js'
 import type { Task } from '../types/tasks.js'
+import { findMatchingServers } from './mcp-registry.js'
 
 const SELF_IMPROVEMENT_SLUG = 'self-improvement'
 
@@ -106,9 +107,17 @@ export async function analyzeGapFromFailure(
   const existing = await dataAdapter.listTasks({ project: project.name, status: ['backlog', 'todo', 'in_progress'] })
   if (isDuplicate(title, existing)) return
 
+  // Check if failure matches a known MCP server capability
+  const searchText = `${task.title} ${task.description ?? ''} ${errorMessage}`
+  const matchedServers = findMatchingServers(searchText)
+  const mcpSuggestion = matchedServers.length > 0
+    ? `\n\nSuggested MCP server: **${matchedServers[0].name}** (${matchedServers[0].package})\n` +
+      `Use the install_mcp_server tool with server_id to install it.`
+    : ''
+
   await dataAdapter.createTask({
     title,
-    description: `Daemon task "${task.title}" (${task.id}) failed with:\n\n${errorMessage}\n\nInvestigate root cause and determine if Hugh needs a capability improvement.`,
+    description: `Daemon task "${task.title}" (${task.id}) failed with:\n\n${errorMessage}\n\nInvestigate root cause and determine if Hugh needs a capability improvement.${mcpSuggestion}`,
     status: 'backlog',
     task_type: 'STANDARD',
     domain: 'personal',
