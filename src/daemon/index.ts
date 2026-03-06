@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import { HUGHMANN_HOME } from '../config.js'
 import { boot } from '../runtime/boot.js'
 import type { Runtime } from '../runtime/runtime.js'
-import { createStats, canExecuteTask, recordSuccess, recordFailure, getStatsSummary, DEFAULT_GUARDRAIL_CONFIG, type DaemonStats, type GuardrailConfig } from './guardrails.js'
+import { createStats, loadStats, saveStats, canExecuteTask, recordSuccess, recordFailure, getStatsSummary, DEFAULT_GUARDRAIL_CONFIG, type DaemonStats, type GuardrailConfig } from './guardrails.js'
 import { appendProgress, type ProgressEntry } from './progress.js'
 import type { Task } from '../types/tasks.js'
 
@@ -73,9 +73,25 @@ export async function startDaemon(): Promise<void> {
   await runtime.initSession()
   log(`Daemon started (PID: ${process.pid})`)
 
-  // Initialize guardrails for autonomous task execution
-  const stats = createStats()
+  // Recover orphaned tasks from a previous crash
+  if (runtime.data) {
+    try {
+      const orphaned = await runtime.data.listTasks({ status: ['in_progress'], limit: 50 })
+      if (orphaned.length > 0) {
+        for (const task of orphaned) {
+          await runtime.data.updateTask(task.id, { status: 'todo' })
+        }
+        log(`[Recovery] Reset ${orphaned.length} orphaned in_progress task(s) to todo`)
+      }
+    } catch {
+      // Best-effort
+    }
+  }
+
+  // Initialize guardrails — load persisted stats or start fresh
+  const stats = loadStats(DAEMON_DIR)
   const guardrailConfig = DEFAULT_GUARDRAIL_CONFIG
+  log(`Stats loaded: ${getStatsSummary(stats)}`)
 
   // Load schedule
   const schedule = loadSchedule()
@@ -589,6 +605,7 @@ async function processTaskQueue(
     // Mark complete
     await runtime.data.completeTask(task.id, summary || 'Task completed')
     recordSuccess(stats)
+    saveStats(DAEMON_DIR, stats)
     log(`[TaskQueue] Completed: "${task.title}" — ${getStatsSummary(stats)}`)
     appendProgress(DAEMON_DIR, {
       taskId: task.id,
@@ -607,6 +624,7 @@ async function processTaskQueue(
     const errorMsg = err instanceof Error ? err.message : String(err)
     await runtime.data.updateTask(task.id, { status: 'blocked' })
     recordFailure(stats)
+    saveStats(DAEMON_DIR, stats)
     log(`[TaskQueue] Failed: "${task.title}" — ${errorMsg} — ${getStatsSummary(stats)}`)
     appendProgress(DAEMON_DIR, {
       taskId: task.id,

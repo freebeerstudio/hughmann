@@ -4,7 +4,12 @@
  * Controls how many tasks the daemon can execute per day,
  * enforces business hours, tracks consecutive failures,
  * and implements cooldown periods.
+ *
+ * Stats are persisted to daemon/stats.json so they survive restarts.
  */
+
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 
 export interface DaemonStats {
   tasksCompleted: number
@@ -42,6 +47,35 @@ export function createStats(): DaemonStats {
     dailyResetDate: todayCst(),
     lastTaskAt: null,
   }
+}
+
+/** Load stats from disk, falling back to fresh stats if not found or corrupted */
+export function loadStats(daemonDir: string): DaemonStats {
+  const path = join(daemonDir, 'stats.json')
+  if (!existsSync(path)) return createStats()
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf-8'))
+    return {
+      tasksCompleted: data.tasksCompleted ?? 0,
+      tasksFailed: data.tasksFailed ?? 0,
+      consecutiveFailures: data.consecutiveFailures ?? 0,
+      dailyTaskCount: data.dailyTaskCount ?? 0,
+      dailyResetDate: data.dailyResetDate ?? todayCst(),
+      lastTaskAt: data.lastTaskAt ? new Date(data.lastTaskAt) : null,
+    }
+  } catch {
+    return createStats()
+  }
+}
+
+/** Persist stats to disk */
+export function saveStats(daemonDir: string, stats: DaemonStats): void {
+  mkdirSync(daemonDir, { recursive: true })
+  const data = {
+    ...stats,
+    lastTaskAt: stats.lastTaskAt?.toISOString() ?? null,
+  }
+  writeFileSync(join(daemonDir, 'stats.json'), JSON.stringify(data, null, 2), 'utf-8')
 }
 
 /** Reset daily counters if the date has changed */
