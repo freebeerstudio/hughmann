@@ -155,6 +155,19 @@ switch (flags.command) {
     break
   }
 
+  case 'dashboard': {
+    const { boot } = await import('./runtime/boot.js')
+    const bootResult = await boot()
+    if (!bootResult.runtime?.data) {
+      console.error('No data adapter available. Run setup first.')
+      process.exit(1)
+    }
+    const { startDashboard } = await import('./dashboard/server.js')
+    const dashPort = flags.args[0] ? parseInt(flags.args[0]) : 3141
+    await startDashboard(bootResult.runtime.data, dashPort)
+    break
+  }
+
   case 'mail': {
     await manageMail(flags)
     break
@@ -1127,7 +1140,8 @@ function showUsage() {
   console.log(`    ${pc.cyan('migrate --apply')}   Connect and create tables ${pc.dim('(auto-detects engine)')}`)
   console.log(`    ${pc.cyan('telegram')}          Start Telegram bot`)
   console.log(`    ${pc.cyan('serve')}             Start as MCP server ${pc.dim('(stdio)')}`)
-  console.log(`    ${pc.cyan('daemon')}            Manage background daemon ${pc.dim('(start|stop|status|queue)')}`)
+  console.log(`    ${pc.cyan('daemon')}            Manage background daemon ${pc.dim('(start|stop|status|queue)')}
+    ${pc.cyan('dashboard')}         Open read-only web dashboard ${pc.dim('(default port: 3141)')}`)
   console.log()
   console.log(`  ${pc.bold('Flags')}:`)
   console.log(`    ${pc.cyan('-c, --continue')}    Resume the most recent session`)
