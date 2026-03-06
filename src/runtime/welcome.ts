@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Runtime } from './runtime.js'
 import { HUGHMANN_HOME } from '../config.js'
+import { getProgressSummary } from '../daemon/progress.js'
 
 const CHANGELOG_PATH = join(HUGHMANN_HOME, 'changelog.md')
 
@@ -88,6 +89,17 @@ export async function generateWelcomeBriefing(runtime: Runtime): Promise<string 
     } catch {
       // Best-effort
     }
+  }
+
+  // 4. Daemon progress log
+  try {
+    const daemonDir = join(HUGHMANN_HOME, 'daemon')
+    const progress = getProgressSummary(daemonDir, 5)
+    if (progress) {
+      sections.push(progress)
+    }
+  } catch {
+    // Best-effort
   }
 
   // If nothing to report, return a minimal greeting

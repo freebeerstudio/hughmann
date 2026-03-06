@@ -17,6 +17,7 @@ import { HUGHMANN_HOME } from '../config.js'
 import { boot } from '../runtime/boot.js'
 import type { Runtime } from '../runtime/runtime.js'
 import { createStats, canExecuteTask, recordSuccess, recordFailure, getStatsSummary, DEFAULT_GUARDRAIL_CONFIG, type DaemonStats, type GuardrailConfig } from './guardrails.js'
+import { appendProgress, type ProgressEntry } from './progress.js'
 import type { Task } from '../types/tasks.js'
 
 const DAEMON_DIR = join(HUGHMANN_HOME, 'daemon')
@@ -562,6 +563,7 @@ async function processTaskQueue(
 
   // Mark as in_progress
   await runtime.data.updateTask(task.id, { status: 'in_progress' })
+  const taskStartTime = Date.now()
 
   // Switch domain if task has one
   const prevDomain = runtime.activeDomain
@@ -588,6 +590,16 @@ async function processTaskQueue(
     await runtime.data.completeTask(task.id, summary || 'Task completed')
     recordSuccess(stats)
     log(`[TaskQueue] Completed: "${task.title}" — ${getStatsSummary(stats)}`)
+    appendProgress(DAEMON_DIR, {
+      taskId: task.id,
+      title: task.title,
+      status: 'completed',
+      timestamp: new Date().toISOString(),
+      durationMs: Date.now() - taskStartTime,
+      summary: summary || undefined,
+      domain: task.domain ?? undefined,
+      project: task.project ?? undefined,
+    })
 
     // Log result
     logResult(`task-${task.id.slice(0, 8)}`, `# ${task.title}\n\n${result}`)
@@ -596,6 +608,16 @@ async function processTaskQueue(
     await runtime.data.updateTask(task.id, { status: 'blocked' })
     recordFailure(stats)
     log(`[TaskQueue] Failed: "${task.title}" — ${errorMsg} — ${getStatsSummary(stats)}`)
+    appendProgress(DAEMON_DIR, {
+      taskId: task.id,
+      title: task.title,
+      status: 'failed',
+      timestamp: new Date().toISOString(),
+      durationMs: Date.now() - taskStartTime,
+      error: errorMsg,
+      domain: task.domain ?? undefined,
+      project: task.project ?? undefined,
+    })
 
     // Record gap for self-improvement
     import('../runtime/gap-analyzer.js').then(({ analyzeGapFromFailure }) =>
