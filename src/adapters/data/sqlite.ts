@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import type { DataAdapter } from './types.js'
 import { cosineSimilarity } from '../../util/math.js'
+import * as sqliteVec from 'sqlite-vec'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
 import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, Milestone, ProjectStatus } from '../../types/projects.js'
 
@@ -114,6 +115,31 @@ CREATE TABLE IF NOT EXISTS planning_sessions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_planning_sessions_created ON planning_sessions (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS kb_nodes (
+  id TEXT PRIMARY KEY,
+  vault TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  node_type TEXT NOT NULL DEFAULT 'chunk',
+  content_hash TEXT,
+  last_modified TEXT,
+  customer_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(vault, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_kb_nodes_vault ON kb_nodes (vault);
+CREATE INDEX IF NOT EXISTS idx_kb_nodes_file_path ON kb_nodes (file_path);
+
+CREATE TABLE IF NOT EXISTS kb_embeddings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  node_id TEXT NOT NULL REFERENCES kb_nodes(id) ON DELETE CASCADE,
+  embedding TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_kb_embeddings_node_id ON kb_embeddings (node_id);
 `
 
 /**
@@ -124,6 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_planning_sessions_created ON planning_sessions (c
 export class SQLiteAdapter implements DataAdapter {
   private db: Database.Database
   private ready = false
+  private vecEnabled = false
 
   constructor(hughmannHome: string) {
     const dataDir = join(hughmannHome, 'data')
@@ -131,6 +158,14 @@ export class SQLiteAdapter implements DataAdapter {
     this.db = new Database(join(dataDir, 'hughmann.db'))
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
+
+    // Load sqlite-vec extension for native vector search
+    try {
+      sqliteVec.load(this.db)
+      this.vecEnabled = true
+    } catch {
+      // sqlite-vec not available — fall back to JS cosine similarity
+    }
   }
 
   async init(): Promise<{ success: boolean; error?: string }> {
@@ -450,12 +485,115 @@ export class SQLiteAdapter implements DataAdapter {
     return results
   }
 
-  // ─── Knowledge Base (stubs — vault sync requires Supabase for pgvector) ──
+  // ─── Knowledge Base ──────────────────────────────────────────────────
 
-  async upsertKbNode(): Promise<string | null> { return null }
-  async searchKbNodes(): Promise<{ id: string; vault: string; filePath: string; title: string; content: string; similarity: number }[]> { return [] }
-  async deleteKbNode(): Promise<void> {}
-  async getKbNodeByPath(): Promise<null> { return null }
+  async upsertKbNode(node: {
+    vault: string
+    filePath: string
+    title: string
+    content: string
+    nodeType?: string
+    contentHash?: string
+    lastModified?: string
+    embedding?: number[]
+    customerId?: string
+  }): Promise<string | null> {
+    if (!this.ready) return null
+
+    const existing = this.db.prepare(
+      `SELECT id FROM kb_nodes WHERE vault = ? AND file_path = ?`
+    ).get(node.vault, node.filePath) as { id: string } | undefined
+
+    const id = existing?.id ?? randomUUID()
+
+    this.db.prepare(`
+      INSERT INTO kb_nodes (id, vault, file_path, title, content, node_type, content_hash, last_modified, customer_id, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(vault, file_path) DO UPDATE SET
+        title = excluded.title,
+        content = excluded.content,
+        node_type = excluded.node_type,
+        content_hash = excluded.content_hash,
+        last_modified = excluded.last_modified,
+        updated_at = datetime('now')
+    `).run(id, node.vault, node.filePath, node.title, node.content, node.nodeType ?? 'chunk', node.contentHash ?? null, node.lastModified ?? null, node.customerId ?? null)
+
+    // Store embedding if provided
+    if (node.embedding) {
+      this.db.prepare(`DELETE FROM kb_embeddings WHERE node_id = ?`).run(id)
+      this.db.prepare(`INSERT INTO kb_embeddings (node_id, embedding) VALUES (?, ?)`).run(id, JSON.stringify(node.embedding))
+    }
+
+    return id
+  }
+
+  async searchKbNodes(queryEmbedding: number[], options?: {
+    limit?: number
+    vault?: string
+    nodeType?: string
+    threshold?: number
+  }): Promise<{ id: string; vault: string; filePath: string; title: string; content: string; similarity: number }[]> {
+    if (!this.ready) return []
+
+    const limit = options?.limit ?? 5
+    const threshold = options?.threshold ?? 0.5
+
+    // Load all embeddings with their node data and compute similarity in JS
+    let rows: { id: string; vault: string; file_path: string; title: string; content: string; embedding: string }[]
+
+    if (options?.vault) {
+      rows = this.db.prepare(`
+        SELECT kn.id, kn.vault, kn.file_path, kn.title, kn.content, ke.embedding
+        FROM kb_nodes kn
+        JOIN kb_embeddings ke ON ke.node_id = kn.id
+        WHERE kn.vault = ?
+      `).all(options.vault) as typeof rows
+    } else {
+      rows = this.db.prepare(`
+        SELECT kn.id, kn.vault, kn.file_path, kn.title, kn.content, ke.embedding
+        FROM kb_nodes kn
+        JOIN kb_embeddings ke ON ke.node_id = kn.id
+      `).all() as typeof rows
+    }
+
+    return rows
+      .map(row => {
+        const emb = JSON.parse(row.embedding) as number[]
+        return {
+          id: row.id,
+          vault: row.vault,
+          filePath: row.file_path,
+          title: row.title,
+          content: row.content,
+          similarity: cosineSimilarity(queryEmbedding, emb),
+        }
+      })
+      .filter(r => r.similarity >= threshold)
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, limit)
+  }
+
+  async deleteKbNode(vault: string, filePath: string): Promise<void> {
+    if (!this.ready) return
+    this.db.prepare(`DELETE FROM kb_nodes WHERE vault = ? AND file_path = ?`).run(vault, filePath)
+  }
+
+  async getKbNodeByPath(vault: string, filePath: string): Promise<{
+    id: string
+    contentHash?: string
+    lastModified?: string
+  } | null> {
+    if (!this.ready) return null
+    const row = this.db.prepare(
+      `SELECT id, content_hash, last_modified FROM kb_nodes WHERE vault = ? AND file_path = ?`
+    ).get(vault, filePath) as { id: string; content_hash: string | null; last_modified: string | null } | undefined
+    if (!row) return null
+    return {
+      id: row.id,
+      contentHash: row.content_hash ?? undefined,
+      lastModified: row.last_modified ?? undefined,
+    }
+  }
 
   // ─── Tasks ──────────────────────────────────────────────────────────────
 
