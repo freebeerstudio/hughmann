@@ -1,6 +1,21 @@
 import type { ModelRouter } from './model-router.js'
 import type { ModelStreamChunk, McpServerConfig } from '../types/model.js'
 
+/** Predefined agent roles with specialized system prompts */
+export type AgentRole = 'researcher' | 'coder' | 'reviewer' | 'writer' | 'planner' | 'custom'
+
+const ROLE_PROMPTS: Record<Exclude<AgentRole, 'custom'>, string> = {
+  researcher: `You are a research specialist. Your job is to gather information, find relevant sources, and compile comprehensive findings. Be thorough but concise. Cite sources when possible. Focus on accuracy over speed.`,
+
+  coder: `You are a coding specialist. Write clean, well-tested code. Follow existing patterns in the codebase. Keep changes minimal and focused. Always consider edge cases and error handling.`,
+
+  reviewer: `You are a code/content reviewer. Analyze the provided work for correctness, completeness, security issues, and quality. Be constructive and specific in your feedback. Categorize issues as critical, important, or minor.`,
+
+  writer: `You are a writing specialist. Produce clear, well-structured content appropriate for the target audience. Match the tone and style conventions of the project. Be concise but thorough.`,
+
+  planner: `You are a planning specialist. Break down complex tasks into actionable steps. Identify dependencies, risks, and decision points. Prioritize by impact and effort. Output structured plans.`,
+}
+
 /**
  * Sub-agent definition for parallel task execution.
  */
@@ -8,9 +23,21 @@ export interface SubAgent {
   id: string
   name: string
   task: string
+  role?: AgentRole
   domain?: string
   /** System prompt override (uses default if not set) */
   systemPrompt?: string
+  maxTurns?: number
+}
+
+/**
+ * Pipeline step — agents run sequentially, each receiving the previous output.
+ */
+export interface PipelineStep {
+  name: string
+  role: AgentRole
+  /** Template with {{INPUT}} placeholder for previous step's output */
+  taskTemplate: string
   maxTurns?: number
 }
 
@@ -82,7 +109,9 @@ export class SubAgentManager {
    * Stream output from a single sub-agent. Tools always enabled.
    */
   async *stream(agent: SubAgent): AsyncIterable<ModelStreamChunk> {
-    const systemPrompt = agent.systemPrompt ?? this.defaultSystemPrompt
+    const systemPrompt = agent.systemPrompt
+      ?? (agent.role && agent.role !== 'custom' ? ROLE_PROMPTS[agent.role] : null)
+      ?? this.defaultSystemPrompt
 
     yield* this.router.routeStream({
       messages: [{ role: 'user', content: agent.task }],
@@ -147,6 +176,77 @@ export class SubAgentManager {
     }
 
     yield { type: 'done', content: '' }
+  }
+
+  /**
+   * Run agents as a sequential pipeline. Each step receives the previous output.
+   * The {{INPUT}} placeholder in taskTemplate is replaced with the prior result.
+   */
+  async runPipeline(steps: PipelineStep[], initialInput: string): Promise<SubAgentResult[]> {
+    const results: SubAgentResult[] = []
+    let currentInput = initialInput
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i]
+      const task = step.taskTemplate.replace(/\{\{INPUT\}\}/g, currentInput)
+
+      const result = await this.run({
+        id: `pipeline-${i}`,
+        name: step.name,
+        role: step.role,
+        task,
+        maxTurns: step.maxTurns,
+      })
+
+      results.push(result)
+
+      if (!result.success) break // Stop pipeline on failure
+      currentInput = result.content
+    }
+
+    return results
+  }
+
+  /**
+   * Synthesize results from multiple agents into a single coherent response.
+   * Uses a planning call to merge and summarize all agent outputs.
+   */
+  async synthesize(results: SubAgentResult[], originalTask: string): Promise<string> {
+    const agentOutputs = results
+      .filter(r => r.success)
+      .map(r => `### ${r.name}\n\n${r.content}`)
+      .join('\n\n---\n\n')
+
+    const synthesisPrompt = `You received outputs from ${results.length} specialized agents working on parts of a larger task.
+
+Original task: ${originalTask}
+
+Agent outputs:
+${agentOutputs}
+
+${results.some(r => !r.success) ? `\nNote: ${results.filter(r => !r.success).length} agent(s) failed: ${results.filter(r => !r.success).map(r => `${r.name}: ${r.error}`).join('; ')}` : ''}
+
+Synthesize these outputs into a single, coherent response. Resolve any conflicts, remove redundancy, and present a unified answer.`
+
+    const response = await this.router.route({
+      messages: [{ role: 'user', content: synthesisPrompt }],
+    }, this.defaultSystemPrompt)
+
+    return response.content
+  }
+
+  /**
+   * Create a role-based agent with a predefined system prompt.
+   */
+  createRoleAgent(name: string, role: AgentRole, task: string, opts?: { maxTurns?: number; domain?: string }): SubAgent {
+    return {
+      id: `${role}-${Date.now()}`,
+      name,
+      role,
+      task,
+      maxTurns: opts?.maxTurns,
+      domain: opts?.domain,
+    }
   }
 
   /**
