@@ -468,7 +468,7 @@ export class TursoAdapter implements DataAdapter {
         })
 
     // Compute cosine similarity in JS
-    const results = result.rows
+    const results = (result.rows ?? [])
       .map(row => {
         const emb = JSON.parse(String(row.embedding)) as number[]
         const sim = cosineSimilarity(queryEmbedding, emb)

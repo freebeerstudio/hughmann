@@ -1,5 +1,8 @@
 import type { ModelAdapter, ModelAdapterOptions } from '../../types/adapters.js'
 import type { ModelResponse, ModelStreamChunk } from '../../types/model.js'
+import { Logger } from '../../util/logger.js'
+
+const log = new Logger('claude-oauth')
 
 /**
  * Claude OAuth adapter using the Agent SDK.
@@ -36,8 +39,7 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
     const model = options?.model ?? 'claude-opus-4-6'
     const tools = options?.tools
 
-    const lastUserMsg = messages.filter(m => m.role === 'user').pop()
-    const prompt = lastUserMsg?.content ?? ''
+    const prompt = buildPromptWithHistory(messages)
 
     let responseText = ''
     let responseModel = model
@@ -113,8 +115,7 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
     const model = options?.model ?? 'claude-opus-4-6'
     const tools = options?.tools
 
-    const lastUserMsg = messages.filter(m => m.role === 'user').pop()
-    const prompt = lastUserMsg?.content ?? ''
+    const prompt = buildPromptWithHistory(messages)
 
     const queryOptions: Record<string, unknown> = {
       model,
@@ -219,7 +220,7 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
             const errorContent = (errors && errors.length > 0)
               ? errors.join('; ')
               : `Agent ended: ${msg.subtype}`
-            console.error(`[claude-oauth] Stream error — subtype: ${msg.subtype}, errors: ${JSON.stringify(errors)}, turns: ${turnCount}`)
+            log.error(`Stream error — subtype: ${msg.subtype}, errors: ${JSON.stringify(errors)}, turns: ${turnCount}`)
             yield {
               type: 'error',
               content: errorContent,
@@ -232,12 +233,37 @@ export class ClaudeOAuthAdapter implements ModelAdapter {
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
-      console.error(`[claude-oauth] Stream threw: ${errMsg}`)
+      log.error(`Stream threw: ${errMsg}`)
       yield { type: 'error', content: `Stream error: ${errMsg}` }
     }
 
     yield { type: 'done', content: '' }
   }
+}
+
+/**
+ * Serialize conversation history into a single prompt string for the Agent SDK.
+ * The SDK's query() accepts a single prompt, so we prepend prior turns as context.
+ */
+function buildPromptWithHistory(messages: { role: string; content: string }[]): string {
+  if (messages.length <= 1) {
+    // Single message — no history needed
+    return messages[0]?.content ?? ''
+  }
+
+  const history = messages.slice(0, -1)
+  const current = messages[messages.length - 1]
+
+  const historyBlock = history
+    .map(m => `[${m.role === 'user' ? 'User' : 'Assistant'}]\n${m.content}`)
+    .join('\n\n')
+
+  return `<conversation_history>
+${historyBlock}
+</conversation_history>
+
+[User]
+${current.content}`
 }
 
 /**

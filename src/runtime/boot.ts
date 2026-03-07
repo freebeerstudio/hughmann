@@ -17,6 +17,7 @@ import type { DataAdapter } from '../adapters/data/types.js'
 import { loadConfig } from '../config.js'
 import { createEmbeddingAdapter } from '../adapters/embeddings/index.js'
 import { UsageTracker } from './usage.js'
+import { setGlobalLogPath } from '../util/logger.js'
 
 export interface BootResult {
   success: boolean
@@ -36,6 +37,9 @@ export interface BootResult {
 export async function boot(): Promise<BootResult> {
   const warnings: string[] = []
   const errors: string[] = []
+
+  // Set up global log file so all Logger instances write to disk
+  setGlobalLogPath(join(HUGHMANN_HOME, 'logs'))
 
   const contextDir = join(HUGHMANN_HOME, 'context')
   const onboardingData = join(HUGHMANN_HOME, '.onboarding-data.json')

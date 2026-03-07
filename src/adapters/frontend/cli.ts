@@ -4,6 +4,7 @@ import type { Runtime } from '../../runtime/runtime.js'
 import type { Skill } from '../../runtime/skills.js'
 import { StreamMarkdownRenderer } from '../../util/markdown.js'
 import { generateWelcomeBriefing } from '../../runtime/welcome.js'
+import { suppressStderr } from '../../util/logger.js'
 
 const GOLD = (text: string) => `\x1b[38;2;200;140;60m${text}\x1b[0m`
 const DIM_COPPER = (text: string) => `\x1b[38;2;120;80;30m${text}\x1b[0m`
@@ -14,6 +15,9 @@ const CHECK_ICON = '\u2713' // ✓
 let lastSessionList: { id: string }[] = []
 
 export async function startChatLoop(runtime: Runtime, firstBoot: boolean = false): Promise<void> {
+  // Suppress Logger stderr output during interactive chat — errors still go to log files
+  suppressStderr(true)
+
   const systemName = runtime.context.config.systemName
   const ownerName = runtime.context.config.ownerName
 

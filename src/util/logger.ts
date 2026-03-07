@@ -18,6 +18,31 @@ export interface LogEntry {
   [key: string]: unknown
 }
 
+/**
+ * When true, Logger instances suppress stderr output.
+ * Set during interactive chat sessions to prevent log noise in the terminal.
+ */
+let stderrSuppressed = false
+
+/**
+ * Global fallback log file path. When set, all Logger instances without
+ * their own logPath will write to this file. Set once at boot.
+ */
+let globalLogPath: string | undefined
+
+export function suppressStderr(suppress: boolean): void {
+  stderrSuppressed = suppress
+}
+
+export function setGlobalLogPath(logDir: string): void {
+  try {
+    mkdirSync(logDir, { recursive: true })
+  } catch {
+    // Best-effort
+  }
+  globalLogPath = join(logDir, 'runtime.jsonl')
+}
+
 export class Logger {
   constructor(
     private component: string,
@@ -52,13 +77,14 @@ export class Logger {
 
     const line = JSON.stringify(entry) + '\n'
 
-    if (this.toStderr) {
+    if (this.toStderr && !stderrSuppressed) {
       process.stderr.write(line)
     }
 
-    if (this.logPath) {
+    const targetPath = this.logPath ?? globalLogPath
+    if (targetPath) {
       try {
-        appendFileSync(this.logPath, line, 'utf-8')
+        appendFileSync(targetPath, line, 'utf-8')
       } catch {
         // Best-effort file write
       }

@@ -504,6 +504,127 @@ export function createInternalToolServer(
     }
   )
 
+  // ─── Knowledge Base Tools ──────────────────────────────────────────────────
+
+  const searchKnowledgeBase = tool(
+    'search_knowledge_base',
+    'Semantic search across the knowledge base (customer intelligence, vault notes, processed emails). Uses vector similarity to find the most relevant content for a natural language query.',
+    {
+      query: z.string().describe('Natural language search query (e.g. "what devices does Acme University use?" or "recent support issues")'),
+      vault: z.string().optional().describe('Filter to a specific vault (e.g. "omnissa", "fbs")'),
+      limit: z.number().optional().describe('Max results to return (default: 5)'),
+      threshold: z.number().optional().describe('Minimum similarity threshold 0-1 (default: 0.3)'),
+    },
+    async (args) => {
+      if (!memory) return errorResult('Memory manager not available')
+      try {
+        const results = await memory.searchKnowledge(args.query, {
+          limit: args.limit ?? 5,
+          vault: args.vault,
+          threshold: args.threshold ?? 0.3,
+        })
+
+        if (results.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No results found for "${args.query}"${args.vault ? ` in vault "${args.vault}"` : ''}.`,
+            }],
+          }
+        }
+
+        const formatted = results.map((r, i) =>
+          `### ${i + 1}. ${r.title} (${(r.similarity * 100).toFixed(1)}% match)\n**Path**: ${r.filePath}\n\n${r.content.slice(0, 500)}${r.content.length > 500 ? '...' : ''}`
+        ).join('\n\n---\n\n')
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `## Knowledge Base Results (${results.length} matches)\n\n${formatted}`,
+          }],
+        }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const browseKnowledgeBase = tool(
+    'browse_knowledge_base',
+    'Browse and list knowledge base entries by vault, keyword, or path. Use this to explore what customer intelligence and notes are available without needing a semantic query.',
+    {
+      vault: z.string().optional().describe('Filter to a specific vault (e.g. "omnissa", "fbs")'),
+      keyword: z.string().optional().describe('Text keyword to search in titles and content'),
+      path_prefix: z.string().optional().describe('Filter by file path prefix (e.g. "Customers/" or "Products/")'),
+      limit: z.number().optional().describe('Max results (default: 20)'),
+    },
+    async (args) => {
+      try {
+        if (!('client' in data)) {
+          return errorResult('Knowledge base browsing requires a Supabase data adapter.')
+        }
+
+        {
+          const client = (data as Record<string, unknown>).client as {
+            from: (table: string) => {
+              select: (cols: string) => {
+                order: (col: string, opts: { ascending: boolean }) => {
+                  limit: (n: number) => {
+                    eq?: (col: string, val: string) => unknown
+                    ilike?: (col: string, val: string) => unknown
+                    then: (fn: (result: { data: Record<string, unknown>[] | null }) => void) => Promise<void>
+                  }
+                }
+              }
+            }
+          }
+
+          let q = client
+            .from('kb_nodes')
+            .select('id, vault, file_path, title, node_type, last_modified, customer_id')
+            .order('last_modified', { ascending: false })
+            .limit(args.limit ?? 20)
+
+          if (args.vault) {
+            q = (q as unknown as { eq: (col: string, val: string) => typeof q }).eq('vault', args.vault)
+          }
+          if (args.keyword) {
+            q = (q as unknown as { ilike: (col: string, val: string) => typeof q }).ilike('title', `%${args.keyword}%`)
+          }
+          if (args.path_prefix) {
+            q = (q as unknown as { like: (col: string, val: string) => typeof q }).like('file_path', `${args.path_prefix}%`)
+          }
+
+          const result = await (q as unknown as Promise<{ data: Record<string, unknown>[] | null; error: unknown }>)
+          const rows = (result as { data: Record<string, unknown>[] | null }).data ?? []
+
+          if (rows.length === 0) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `No knowledge base entries found${args.vault ? ` in vault "${args.vault}"` : ''}${args.keyword ? ` matching "${args.keyword}"` : ''}.`,
+              }],
+            }
+          }
+
+          const lines = rows.map((r: Record<string, unknown>) =>
+            `- **${r.title || 'Untitled'}** (${r.vault})\n  Path: ${r.file_path} | Type: ${r.node_type || 'unknown'} | Modified: ${r.last_modified ? String(r.last_modified).split('T')[0] : 'unknown'}`
+          )
+
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `## Knowledge Base (${rows.length} entries)\n\n${lines.join('\n')}`,
+            }],
+          }
+        }
+
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
   // ─── Utility Tools ─────────────────────────────────────────────────────────
 
   const getCurrentTime = tool(
@@ -760,6 +881,8 @@ export function createInternalToolServer(
       getPlanningContext, capturePlanningSummary,
       // Context
       updateMasterPlanSection,
+      // Knowledge Base
+      searchKnowledgeBase, browseKnowledgeBase,
       // MCP management
       listAvailableMcpServers, installMcpServer, uninstallMcpServer,
       // Feedback

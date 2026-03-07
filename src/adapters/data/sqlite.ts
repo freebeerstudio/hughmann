@@ -464,7 +464,7 @@ export class SQLiteAdapter implements DataAdapter {
     const threshold = options?.threshold ?? 0.5
 
     // Fetch all embeddings (optionally filtered by domain)
-    let rows: { content: string; domain: string | null; embedding: string; memory_date: string }[]
+    let rows: { content: string; domain: string | null; embedding: string; memory_date: string }[] = []
     if (options?.domain) {
       rows = this.db.prepare(`
         SELECT me.content, me.domain, me.embedding, m.memory_date
@@ -553,7 +553,7 @@ export class SQLiteAdapter implements DataAdapter {
     const threshold = options?.threshold ?? 0.5
 
     // Load all embeddings with their node data and compute similarity in JS
-    let rows: { id: string; vault: string; file_path: string; title: string; content: string; embedding: string }[]
+    let rows: { id: string; vault: string; file_path: string; title: string; content: string; embedding: string }[] = []
 
     if (options?.vault) {
       rows = this.db.prepare(`
