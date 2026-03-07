@@ -60,7 +60,8 @@ describe('guardrails', () => {
       const stats = createStats()
       stats.dailyTaskCount = DEFAULT_GUARDRAIL_CONFIG.maxTasksPerDay
 
-      const result = canExecuteTask(stats, DEFAULT_GUARDRAIL_CONFIG)
+      const config = { ...DEFAULT_GUARDRAIL_CONFIG, businessHoursStart: 0, businessHoursEnd: 24 }
+      const result = canExecuteTask(stats, config)
       expect(result.allowed).toBe(false)
       expect(result.reason).toContain('Daily task limit')
     })
