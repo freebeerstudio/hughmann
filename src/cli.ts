@@ -174,6 +174,21 @@ switch (flags.command) {
     break
   }
 
+  case 'gmail': {
+    const sub = flags.args[0]
+    if (sub === 'classify') {
+      const { handleGmailClassify } = await import('./mail/gmail-cli.js')
+      await handleGmailClassify()
+    } else if (sub === 'discover') {
+      const { handleGmailDiscover } = await import('./mail/gmail-cli.js')
+      await handleGmailDiscover()
+    } else {
+      console.log('Usage: hughmann gmail [classify|discover]')
+      console.log('  Reads email JSON from stdin, outputs classification JSON')
+    }
+    break
+  }
+
   case 'tasks': {
     await manageTasks(flags)
     break
@@ -1256,6 +1271,7 @@ function showUsage() {
   console.log(`    ${pc.cyan('focus')}             Strategic planning session ${pc.dim('(15-min collaborative planning)')}`)
   console.log(`    ${pc.cyan('tasks')}             Manage task queue ${pc.dim('(list|create|done|backlog|blocked)')}`)
   console.log(`    ${pc.cyan('mail')}              Process Elle mailbox emails ${pc.dim('(process|status)')}`)
+  console.log(`    ${pc.cyan('gmail')}             Gmail classification ${pc.dim('(classify|discover)')}`)
   console.log(`    ${pc.cyan('vault sync')}        Sync Obsidian vaults to database`)
   console.log(`    ${pc.cyan('trigger')}           Manage Trigger.dev ${pc.dim('(dev|deploy|sync)')}`)
   console.log(`    ${pc.cyan('schedule')}          Manage scheduled skills ${pc.dim('(launchd)')}`)

@@ -50,6 +50,9 @@ export function getDefaultSchedules(): { skillId: string; hour: number; minute: 
             { skillId: 'morning', hour: hours.start, minute: 0, description: `Morning dashboard at ${formatHour(hours.start)}` },
             { skillId: 'closeout', hour: hours.end, minute: 0, description: `Afternoon closeout at ${formatHour(hours.end)}` },
             { skillId: 'review', hour: reviewHour, minute: 0, weekday: 5, description: `Weekly review on Fridays at ${formatHour(reviewHour)}` },
+            { skillId: 'process-email', hour: 7, minute: 0, description: 'Process email at 7:00 AM' },
+            { skillId: 'process-email', hour: 12, minute: 0, description: 'Process email at 12:00 PM' },
+            { skillId: 'process-email', hour: 18, minute: 0, description: 'Process email at 6:00 PM' },
           ]
         }
       }
@@ -62,6 +65,9 @@ export function getDefaultSchedules(): { skillId: string; hour: number; minute: 
     { skillId: 'morning', hour: 7, minute: 0, description: 'Morning dashboard at 7:00 AM' },
     { skillId: 'closeout', hour: 16, minute: 0, description: 'Afternoon closeout at 4:00 PM' },
     { skillId: 'review', hour: 9, minute: 0, weekday: 5, description: 'Weekly review on Fridays at 9:00 AM' },
+    { skillId: 'process-email', hour: 7, minute: 0, description: 'Process email at 7:00 AM' },
+    { skillId: 'process-email', hour: 12, minute: 0, description: 'Process email at 12:00 PM' },
+    { skillId: 'process-email', hour: 18, minute: 0, description: 'Process email at 6:00 PM' },
   ]
 }
 

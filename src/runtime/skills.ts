@@ -315,6 +315,9 @@ export class SkillManager {
 
     // Auto-install bundled skill-creator if not already present
     this.installBundledSkill('skill-creator')
+    this.installBundledSkill('discover-email-categories')
+    this.installBundledSkill('bulk-classify-email')
+    this.installBundledSkill('process-email')
   }
 
   /** Copy a bundled skill from src/skills/ to user's skills dir if not present */
