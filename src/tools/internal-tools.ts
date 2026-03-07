@@ -23,6 +23,16 @@ function errorResult(message: string) {
   }
 }
 
+/** Sanitize text for safe JSON serialization in Agent SDK stream.
+ *  Strips control characters and caps total length. */
+function sanitizeToolOutput(text: string, maxLength: number = 4000): string {
+  // Strip control chars except newline/tab, replace null bytes
+  const clean = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+  return clean.length > maxLength
+    ? clean.slice(0, maxLength) + '\n\n[truncated]'
+    : clean
+}
+
 /** Strip undefined values from an object (prevents wiping DB fields via spread) */
 function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
   const result: Record<string, unknown> = {}
@@ -533,14 +543,16 @@ export function createInternalToolServer(
           }
         }
 
+        // Cap content per result to avoid overwhelming the Agent SDK JSON stream
+        const maxPerResult = Math.floor(3000 / results.length)
         const formatted = results.map((r, i) =>
-          `### ${i + 1}. ${r.title} (${(r.similarity * 100).toFixed(1)}% match)\n**Path**: ${r.filePath}\n\n${r.content.slice(0, 500)}${r.content.length > 500 ? '...' : ''}`
+          `### ${i + 1}. ${r.title} (${(r.similarity * 100).toFixed(1)}% match)\n**Path**: ${r.filePath}\n\n${r.content.slice(0, maxPerResult)}${r.content.length > maxPerResult ? '...' : ''}`
         ).join('\n\n---\n\n')
 
         return {
           content: [{
             type: 'text' as const,
-            text: `## Knowledge Base Results (${results.length} matches)\n\n${formatted}`,
+            text: sanitizeToolOutput(`## Knowledge Base Results (${results.length} matches)\n\n${formatted}`),
           }],
         }
       } catch (err) {
@@ -583,7 +595,7 @@ export function createInternalToolServer(
             .from('kb_nodes')
             .select('id, vault, file_path, title, node_type, last_modified, customer_id')
             .order('last_modified', { ascending: false })
-            .limit(args.limit ?? 20)
+            .limit(Math.min(args.limit ?? 20, 10))
 
           if (args.vault) {
             q = (q as unknown as { eq: (col: string, val: string) => typeof q }).eq('vault', args.vault)
@@ -614,7 +626,7 @@ export function createInternalToolServer(
           return {
             content: [{
               type: 'text' as const,
-              text: `## Knowledge Base (${rows.length} entries)\n\n${lines.join('\n')}`,
+              text: sanitizeToolOutput(`## Knowledge Base (${rows.length} entries)\n\n${lines.join('\n')}`),
             }],
           }
         }
