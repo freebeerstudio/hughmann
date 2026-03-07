@@ -16,7 +16,7 @@ const FIELD_DELIMITER = '|||'
 // Config from env
 // ---------------------------------------------------------------------------
 
-function getAccountName(): string {
+function _getAccountName(): string {
   return process.env.MAIL_ACCOUNT ?? 'Exchange'
 }
 

@@ -5,6 +5,9 @@ import type { EmbeddingAdapter } from '../adapters/embeddings/index.js'
 import type { DataAdapter } from '../adapters/data/types.js'
 import type { Session } from './session.js'
 import type { IsolationZone } from '../types/context.js'
+import { Logger } from '../util/logger.js'
+
+const log = new Logger('memory')
 
 const DISTILL_PROMPT = `You are a memory extraction system. Given a conversation between a user and their AI system, extract the key information worth remembering.
 
@@ -88,7 +91,7 @@ export class MemoryManager {
       return extracted
     } catch (err) {
       // Distillation is best-effort — don't crash if model fails
-      console.error(`Memory distillation failed: ${err instanceof Error ? err.message : String(err)}`)
+      log.error(`Memory distillation failed: ${err instanceof Error ? err.message : String(err)}`)
       return null
     }
   }
@@ -318,7 +321,7 @@ export class MemoryManager {
         threshold: options?.threshold ?? 0.3,
       })
     } catch (err) {
-      console.error(`[memory] searchKnowledge failed: ${err instanceof Error ? err.message : String(err)}`)
+      log.error(`searchKnowledge failed: ${err instanceof Error ? err.message : String(err)}`)
       return []
     }
   }

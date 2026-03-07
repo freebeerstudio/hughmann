@@ -1,4 +1,3 @@
-import pc from 'picocolors'
 
 const COPPER = (text: string) => `\x1b[38;2;154;70;4m${text}\x1b[0m`
 const GOLD = (text: string) => `\x1b[38;2;200;140;60m${text}\x1b[0m`

@@ -1,12 +1,12 @@
 import type { ContextStore, DomainContext, IsolationZone } from '../types/context.js'
 import type { ModelStreamChunk, ToolOptions, McpServerConfig } from '../types/model.js'
-import { ModelRouter } from './model-router.js'
+import type { ModelRouter } from './model-router.js'
 import { buildSystemPrompt } from './system-prompt-builder.js'
 import { reloadContext } from './context-loader.js'
-import { SessionManager } from './session.js'
+import type { SessionManager } from './session.js'
 import type { SessionSummary } from './session.js'
 import { ContextWriter } from './context-writer.js'
-import { MemoryManager } from './memory.js'
+import type { MemoryManager } from './memory.js'
 import { SkillManager } from './skills.js'
 import type { DataAdapter } from '../adapters/data/types.js'
 import type { UsageTracker } from './usage.js'
@@ -32,6 +32,7 @@ export class Runtime {
   skills: SkillManager
   data?: DataAdapter
   usage?: UsageTracker
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   internalToolServer?: ReturnType<typeof import('../tools/internal-tools.js').createInternalToolServer>
 
   private contextDir: string

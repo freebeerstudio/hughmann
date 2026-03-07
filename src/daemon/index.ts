@@ -16,11 +16,11 @@ import { join } from 'node:path'
 import { HUGHMANN_HOME } from '../config.js'
 import { boot } from '../runtime/boot.js'
 import type { Runtime } from '../runtime/runtime.js'
-import { createStats, loadStats, saveStats, canExecuteTask, recordSuccess, recordFailure, getStatsSummary, DEFAULT_GUARDRAIL_CONFIG, type DaemonStats, type GuardrailConfig } from './guardrails.js'
-import { appendProgress, type ProgressEntry } from './progress.js'
+import { loadStats, saveStats, canExecuteTask, recordSuccess, recordFailure, getStatsSummary, DEFAULT_GUARDRAIL_CONFIG, type DaemonStats, type GuardrailConfig } from './guardrails.js'
+import { appendProgress } from './progress.js'
 import { runProactiveChecks } from './proactive.js'
 import { buildTaskPrompt, selectBestTask, recordTaskResult } from '../runtime/task-executor.js'
-import type { Task } from '../types/tasks.js'
+import { createDaemonLogger } from '../util/logger.js'
 
 const DAEMON_DIR = join(HUGHMANN_HOME, 'daemon')
 const INBOX_DIR = join(HUGHMANN_HOME, 'inbox')
@@ -482,16 +482,14 @@ function deriveDefaultSchedule(): ScheduleRule[] {
   ]
 }
 
+const logger = createDaemonLogger(LOG_DIR)
+
 function log(message: string): void {
-  const timestamp = new Date().toISOString()
-  const line = `[${timestamp}] ${message}\n`
-
-  // Write to daemon log
-  const logPath = join(LOG_DIR, 'daemon.log')
-  appendFileSync(logPath, line, 'utf-8')
-
-  // Also log to stderr (visible if running in foreground)
-  process.stderr.write(line)
+  if (message.toLowerCase().includes('error') || message.toLowerCase().includes('failed')) {
+    logger.error(message)
+  } else {
+    logger.info(message)
+  }
 }
 
 function logResult(taskId: string, result: string): void {

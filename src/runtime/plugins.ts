@@ -18,6 +18,9 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Task } from '../types/tasks.js'
+import { Logger } from '../util/logger.js'
+
+const log = new Logger('plugins')
 
 // ─── Event Types ────────────────────────────────────────────────────────
 
@@ -146,7 +149,7 @@ export class PluginManager {
       try {
         await (handler as (ctx: unknown) => Promise<void> | void)(ctx)
       } catch (err) {
-        console.error(`[Plugin:${plugin.manifest.name}] Error in ${event}: ${err instanceof Error ? err.message : String(err)}`)
+        log.error(`${event} error`, { plugin: plugin.manifest.name, error: err instanceof Error ? err.message : String(err) })
       }
     }
   }

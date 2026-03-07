@@ -1,4 +1,4 @@
-import type { ModelRequest, ModelResponse, ModelStreamChunk, ToolOptions } from './model.js'
+import type { ModelResponse, ModelStreamChunk, ToolOptions } from './model.js'
 
 export interface ModelAdapterOptions {
   model?: string

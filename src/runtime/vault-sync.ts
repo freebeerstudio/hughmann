@@ -13,7 +13,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { join, relative, basename, extname } from 'node:path'
 import type { DataAdapter } from '../adapters/data/types.js'
 import type { EmbeddingAdapter } from '../adapters/embeddings/index.js'
-import { domainToCustomerId } from '../adapters/data/supabase.js'
+import { domainToCustomerId } from '../util/domain.js'
 
 const MAX_CHUNK_SIZE = 2000
 

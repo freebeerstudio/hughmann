@@ -12,7 +12,7 @@
  * via the welcome briefing.
  */
 
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { DataAdapter } from '../adapters/data/types.js'
 

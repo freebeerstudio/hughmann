@@ -1,5 +1,5 @@
 import type { ModelAdapter, ModelAdapterOptions } from '../types/adapters.js'
-import type { ModelRequest, ModelResponse, ModelStreamChunk, ToolOptions } from '../types/model.js'
+import type { ModelRequest, ModelResponse, ModelStreamChunk } from '../types/model.js'
 
 const DEFAULT_MODEL = 'claude-opus-4-6'
 

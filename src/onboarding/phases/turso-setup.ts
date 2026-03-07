@@ -56,6 +56,7 @@ export async function setupTurso(options: TursoSetupOptions = {}): Promise<boole
   const spin = p.spinner()
   spin.start('Testing Turso connection...')
 
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   let client: import('@libsql/client').Client
   try {
     const { createClient } = await import('@libsql/client')

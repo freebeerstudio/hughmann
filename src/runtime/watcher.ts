@@ -1,5 +1,4 @@
 import { watch, type FSWatcher } from 'node:fs'
-import { join } from 'node:path'
 
 /**
  * File watcher for context hot-reload.

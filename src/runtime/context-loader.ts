@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { join } from 'node:path'
 import type { ContextDocument, ContextStore, DomainContext, IsolationZone } from '../types/context.js'
 
 function extractTitle(raw: string): string {
@@ -19,7 +19,7 @@ function readDoc(path: string, type: ContextDocument['meta']['type']): ContextDo
   }
 }
 
-function classifyFile(filename: string): ContextDocument['meta']['type'] | null {
+function _classifyFile(filename: string): ContextDocument['meta']['type'] | null {
   const base = filename.replace(/\.md$/, '')
   const map: Record<string, ContextDocument['meta']['type']> = {
     soul: 'soul',
@@ -78,7 +78,7 @@ function parseIsolationZones(soulRaw: string): IsolationMap {
   return result
 }
 
-function slugify(name: string): string {
+function _slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 }
 

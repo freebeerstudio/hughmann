@@ -204,6 +204,53 @@ switch (flags.command) {
     break
   }
 
+  case 'entropy': {
+    const { join } = await import('node:path')
+    const { HUGHMANN_HOME } = await import('./config.js')
+    const { runEntropyCheck } = await import('./runtime/entropy.js')
+    const apply = flags.args.includes('--apply')
+    const contextDir = join(HUGHMANN_HOME, 'context')
+
+    let data
+    try {
+      const runtime = await bootRuntime({ quiet: true })
+      data = runtime.data ?? undefined
+    } catch {
+      // Proceed without data adapter
+    }
+
+    const report = await runEntropyCheck(contextDir, data, !apply)
+    console.log(apply ? '\n  Entropy cleanup applied:\n' : '\n  Entropy report (dry run):\n')
+
+    if (report.staleTasks.length > 0) {
+      console.log(`  Stale backlog tasks: ${report.staleTasks.length}`)
+      for (const t of report.staleTasks.slice(0, 10)) {
+        console.log(`    - ${t.title} (${t.daysSinceUpdate}d)`)
+      }
+    }
+    if (report.staleDocs.length > 0) {
+      console.log(`  Stale context docs: ${report.staleDocs.length}`)
+      for (const d of report.staleDocs.slice(0, 10)) {
+        console.log(`    - ${d.path} (${d.daysSinceModified}d)`)
+      }
+    }
+    if (report.orphanedSessions.length > 0) {
+      console.log(`  Orphaned sessions: ${report.orphanedSessions.length}`)
+      for (const s of report.orphanedSessions.slice(0, 10)) {
+        console.log(`    - ${s.title} (${s.daysSinceCreation}d)`)
+      }
+    }
+
+    const total = report.staleTasks.length + report.staleDocs.length + report.orphanedSessions.length
+    if (total === 0) {
+      console.log('  No entropy detected. System is clean.')
+    } else if (!apply) {
+      console.log(`\n  Run with --apply to clean up stale backlog tasks.`)
+    }
+    console.log()
+    break
+  }
+
   case 'help': {
     showUsage()
     break
@@ -701,7 +748,7 @@ async function manageTrigger(flags: CliFlags) {
       const files = readdirSync(contextDir).filter(f => f.endsWith('.md'))
       console.log(`  ${pc.dim(`Found ${files.length} context files`)}`)
 
-      const { SupabaseAdapter } = await import('./adapters/data/supabase.js')
+      const { SupabaseAdapter } = await import('./adapters/data/supabase.js') // eslint-disable-line @typescript-eslint/no-unused-vars
       const adapter = runtime.data as InstanceType<typeof SupabaseAdapter>
       const client = adapter.getClient()
 
