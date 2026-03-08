@@ -288,6 +288,20 @@ export async function buildPyramidContext(client: SupabaseClient): Promise<strin
 }
 
 /**
+ * Save a briefing to the briefings table.
+ */
+export async function saveBriefing(
+  client: SupabaseClient,
+  type: 'morning' | 'closeout' | 'weekly_review',
+  content: string,
+  domain?: string,
+): Promise<string> {
+  const id = crypto.randomUUID()
+  await client.from('briefings').insert({ id, type, content, domain: domain ?? null })
+  return id
+}
+
+/**
  * Send a message via Telegram.
  */
 export async function sendTelegram(message: string): Promise<void> {

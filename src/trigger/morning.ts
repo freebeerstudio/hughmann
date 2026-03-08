@@ -14,6 +14,7 @@ import {
   getCloudMemories,
   callModel,
   sendTelegram,
+  saveBriefing,
 } from './utils.js'
 
 export const morningDashboard = schedules.task({
@@ -51,6 +52,9 @@ Keep it concise and actionable. Use bullet points. This should take 2 minutes to
       content: result,
       memory_date: new Date().toISOString().split('T')[0],
     })
+
+    // Save to briefings table
+    await saveBriefing(client, 'morning', result)
 
     // Push to Telegram
     await sendTelegram(`☀️ *Morning Dashboard*\n\n${result}`)

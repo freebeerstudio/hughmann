@@ -14,6 +14,7 @@ import {
   getCloudMemories,
   callModel,
   sendTelegram,
+  saveBriefing,
 } from './utils.js'
 
 export const weeklyReview = schedules.task({
@@ -55,6 +56,9 @@ Be thorough but organized. This is a 3-5 minute read.`
       content: result,
       memory_date: new Date().toISOString().split('T')[0],
     })
+
+    // Save to briefings table
+    await saveBriefing(client, 'weekly_review', result)
 
     // Push to Telegram
     await sendTelegram(`📋 *Weekly Review*\n\n${result}`)

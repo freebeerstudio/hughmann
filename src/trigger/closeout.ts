@@ -14,6 +14,7 @@ import {
   getCloudMemories,
   callModel,
   sendTelegram,
+  saveBriefing,
 } from './utils.js'
 
 export const afternoonCloseout = schedules.task({
@@ -51,6 +52,9 @@ Keep it brief and focused. This is a 1-minute read at end of day.`
       content: result,
       memory_date: new Date().toISOString().split('T')[0],
     })
+
+    // Save to briefings table
+    await saveBriefing(client, 'closeout', result)
 
     // Push to Telegram
     await sendTelegram(`🌙 *Afternoon Closeout*\n\n${result}`)
