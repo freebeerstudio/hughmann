@@ -6,7 +6,8 @@ import type { DataAdapter } from './types.js'
 import { cosineSimilarity } from '../../util/math.js'
 import * as sqliteVec from 'sqlite-vec'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, Milestone, ProjectStatus, DomainGoal } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
+import type { Advisor } from '../../types/advisors.js'
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -32,25 +33,6 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE INDEX IF NOT EXISTS idx_memories_date ON memories (memory_date DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_domain ON memories (domain);
 
-CREATE TABLE IF NOT EXISTS decisions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  decision TEXT NOT NULL,
-  reasoning TEXT,
-  domain TEXT NOT NULL DEFAULT 'General',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_decisions_domain ON decisions (domain);
-CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions (created_at DESC);
-
-CREATE TABLE IF NOT EXISTS domain_notes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  domain TEXT NOT NULL,
-  content TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'manual',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_domain_notes_domain ON domain_notes (domain);
-
 CREATE TABLE IF NOT EXISTS memory_embeddings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   memory_id INTEGER,
@@ -66,9 +48,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   title TEXT NOT NULL,
   description TEXT,
   status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('backlog', 'todo', 'in_progress', 'done', 'blocked')),
-  task_type TEXT NOT NULL DEFAULT 'STANDARD' CHECK (task_type IN ('MUST', 'MIT', 'BIG_ROCK', 'STANDARD')),
+  task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('must', 'mit', 'big_rock', 'standard')),
   domain TEXT,
-  project TEXT,
+  project_id TEXT,
   priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
   due_date TEXT,
   cwd TEXT,
@@ -91,22 +73,17 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   slug TEXT NOT NULL UNIQUE,
   description TEXT,
-  domain TEXT,
+  domain TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'paused', 'completed', 'archived', 'incubator')),
-  goals TEXT NOT NULL DEFAULT '[]',
-  quarterly_goal TEXT,
-  milestones TEXT NOT NULL DEFAULT '[]',
   priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
+  domain_goal_id TEXT,
   north_star TEXT,
   guardrails TEXT NOT NULL DEFAULT '[]',
-  domain_goal_id TEXT,
   infrastructure TEXT NOT NULL DEFAULT '{}',
   refinement_cadence TEXT DEFAULT 'weekly' CHECK (refinement_cadence IN ('weekly', 'biweekly', 'monthly')),
   last_refinement_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  completed_at TEXT,
-  metadata TEXT NOT NULL DEFAULT '{}'
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_projects_domain ON projects (domain);
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects (status);
@@ -164,6 +141,28 @@ CREATE TABLE IF NOT EXISTS kb_embeddings (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_kb_embeddings_node_id ON kb_embeddings (node_id);
+
+CREATE TABLE IF NOT EXISTS briefings (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  domain TEXT,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_briefings_type ON briefings (type);
+CREATE INDEX IF NOT EXISTS idx_briefings_created ON briefings (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS advisors (
+  id TEXT PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  display_name TEXT NOT NULL,
+  role TEXT,
+  expertise TEXT DEFAULT '[]',
+  system_prompt TEXT NOT NULL,
+  avatar_url TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_advisors_name ON advisors (name);
 `
 
 /**
@@ -197,9 +196,9 @@ export class SQLiteAdapter implements DataAdapter {
       this.db.exec(SCHEMA_SQL)
       // Verify tables
       const tables = this.db.prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sessions','memories','decisions','domain_notes')`
+        `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sessions','memories','tasks','projects','briefings','advisors')`
       ).all() as { name: string }[]
-      if (tables.length < 4) {
+      if (tables.length < 6) {
         return { success: false, error: 'Failed to create all tables' }
       }
       this.ready = true
@@ -335,78 +334,6 @@ export class SQLiteAdapter implements DataAdapter {
       ORDER BY created_at DESC
     `).all(sinceStr) as {
       content: string; domain: string | null; memory_date: string; created_at: string
-    }[]
-  }
-
-  // ─── Decisions ─────────────────────────────────────────────────────────
-
-  async logDecision(entry: {
-    decision: string
-    reasoning: string
-    domain: string
-  }): Promise<void> {
-    if (!this.ready) return
-
-    this.db.prepare(`
-      INSERT INTO decisions (decision, reasoning, domain)
-      VALUES (?, ?, ?)
-    `).run(entry.decision, entry.reasoning, entry.domain)
-  }
-
-  async getDecisions(domain?: string, limit = 20): Promise<{
-    decision: string
-    reasoning: string
-    domain: string
-    created_at: string
-  }[]> {
-    if (!this.ready) return []
-
-    if (domain) {
-      return this.db.prepare(`
-        SELECT decision, reasoning, domain, created_at
-        FROM decisions WHERE domain = ?
-        ORDER BY created_at DESC LIMIT ?
-      `).all(domain, limit) as {
-        decision: string; reasoning: string; domain: string; created_at: string
-      }[]
-    }
-
-    return this.db.prepare(`
-      SELECT decision, reasoning, domain, created_at
-      FROM decisions ORDER BY created_at DESC LIMIT ?
-    `).all(limit) as {
-      decision: string; reasoning: string; domain: string; created_at: string
-    }[]
-  }
-
-  // ─── Domain Notes ──────────────────────────────────────────────────────
-
-  async addDomainNote(entry: {
-    domain: string
-    content: string
-    source: string
-  }): Promise<void> {
-    if (!this.ready) return
-
-    this.db.prepare(`
-      INSERT INTO domain_notes (domain, content, source)
-      VALUES (?, ?, ?)
-    `).run(entry.domain, entry.content, entry.source)
-  }
-
-  async getDomainNotes(domain: string, limit = 50): Promise<{
-    content: string
-    source: string
-    created_at: string
-  }[]> {
-    if (!this.ready) return []
-
-    return this.db.prepare(`
-      SELECT content, source, created_at
-      FROM domain_notes WHERE domain = ?
-      ORDER BY created_at DESC LIMIT ?
-    `).all(domain, limit) as {
-      content: string; source: string; created_at: string
     }[]
   }
 
@@ -640,9 +567,13 @@ export class SQLiteAdapter implements DataAdapter {
       conditions.push('domain = ?')
       params.push(filters.domain)
     }
-    if (filters?.project) {
-      conditions.push('project = ?')
-      params.push(filters.project)
+    if (filters?.project_id) {
+      conditions.push('project_id = ?')
+      params.push(filters.project_id)
+    }
+    if (filters?.assignee) {
+      conditions.push('assignee = ?')
+      params.push(filters.assignee)
     }
     if (filters?.task_type) {
       if (Array.isArray(filters.task_type)) {
@@ -670,9 +601,8 @@ export class SQLiteAdapter implements DataAdapter {
       title: input.title,
       description: input.description ?? null,
       status: input.status ?? 'todo',
-      task_type: input.task_type ?? 'STANDARD',
+      task_type: input.task_type ?? 'standard',
       domain: input.domain ?? null,
-      project: input.project ?? null,
       project_id: input.project_id ?? null,
       priority: input.priority ?? 3,
       due_date: input.due_date ?? null,
@@ -688,11 +618,11 @@ export class SQLiteAdapter implements DataAdapter {
     }
 
     this.db.prepare(`
-      INSERT INTO tasks (id, title, description, status, task_type, domain, project, priority, due_date, cwd, created_at, updated_at, completed_at, completion_notes, assignee, assigned_agent_id, blocked_reason, sprint)
+      INSERT INTO tasks (id, title, description, status, task_type, domain, project_id, priority, due_date, cwd, created_at, updated_at, completed_at, completion_notes, assignee, assigned_agent_id, blocked_reason, sprint)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       task.id, task.title, task.description, task.status, task.task_type,
-      task.domain, task.project, task.priority, task.due_date, task.cwd,
+      task.domain, task.project_id, task.priority, task.due_date, task.cwd,
       task.created_at, task.updated_at, task.completed_at, task.completion_notes,
       task.assignee, task.assigned_agent_id, task.blocked_reason, task.sprint,
     )
@@ -784,48 +714,34 @@ export class SQLiteAdapter implements DataAdapter {
   async createProject(input: CreateProjectInput): Promise<Project> {
     const now = new Date().toISOString()
     const slug = input.slug ?? input.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-    const milestones: Milestone[] = (input.milestones ?? []).map(m => ({
-      id: randomUUID(),
-      title: m.title,
-      target_date: m.target_date ?? null,
-      completed: false,
-      completed_at: null,
-    }))
 
     const project: Project = {
       id: randomUUID(),
       name: input.name,
       slug,
       description: input.description ?? null,
-      domain: input.domain ?? null,
+      domain: input.domain,
       status: input.status ?? 'planning',
-      goals: input.goals ?? [],
-      quarterly_goal: input.quarterly_goal ?? null,
-      milestones,
       priority: input.priority ?? 3,
+      domain_goal_id: input.domain_goal_id ?? null,
       north_star: input.north_star ?? null,
       guardrails: input.guardrails ?? [],
-      domain_goal_id: null,
       infrastructure: input.infrastructure ?? {},
       refinement_cadence: input.refinement_cadence ?? 'weekly',
       last_refinement_at: null,
       created_at: now,
       updated_at: now,
-      completed_at: null,
-      metadata: input.metadata ?? {},
     }
 
     this.db.prepare(`
-      INSERT INTO projects (id, name, slug, description, domain, status, goals, quarterly_goal, milestones, priority, north_star, guardrails, infrastructure, refinement_cadence, created_at, updated_at, completed_at, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO projects (id, name, slug, description, domain, status, priority, domain_goal_id, north_star, guardrails, infrastructure, refinement_cadence, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       project.id, project.name, project.slug, project.description, project.domain,
-      project.status, JSON.stringify(project.goals), project.quarterly_goal,
-      JSON.stringify(project.milestones), project.priority,
+      project.status, project.priority, project.domain_goal_id,
       project.north_star, JSON.stringify(project.guardrails),
       JSON.stringify(project.infrastructure), project.refinement_cadence,
-      project.created_at, project.updated_at, project.completed_at,
-      JSON.stringify(project.metadata),
+      project.created_at, project.updated_at,
     )
 
     return project
@@ -838,7 +754,7 @@ export class SQLiteAdapter implements DataAdapter {
     const params: unknown[] = []
 
     for (const [key, value] of Object.entries(input)) {
-      if (['goals', 'milestones', 'metadata', 'guardrails', 'infrastructure'].includes(key)) {
+      if (['guardrails', 'infrastructure'].includes(key)) {
         sets.push(`${key} = ?`)
         params.push(JSON.stringify(value))
       } else {
@@ -918,6 +834,103 @@ export class SQLiteAdapter implements DataAdapter {
     return row ? parseSqlitePlanningSession(row) : null
   }
 
+  // ─── Briefings ─────────────────────────────────────────────────────────
+
+  async saveBriefing(type: 'morning' | 'closeout' | 'weekly_review' | 'custom', content: string, domain?: string): Promise<string> {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    this.db.prepare(
+      'INSERT INTO briefings (id, type, content, domain, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(...[id, type, content, domain ?? null, now])
+    return id
+  }
+
+  async getLatestBriefing(type?: string): Promise<{
+    id: string
+    type: string
+    domain: string | null
+    content: string
+    created_at: string
+  } | null> {
+    if (!this.ready) return null
+
+    if (type) {
+      return (this.db.prepare(
+        'SELECT id, type, domain, content, created_at FROM briefings WHERE type = ? ORDER BY created_at DESC LIMIT 1'
+      ).get(type) as {
+        id: string; type: string; domain: string | null; content: string; created_at: string
+      } | undefined) ?? null
+    }
+
+    return (this.db.prepare(
+      'SELECT id, type, domain, content, created_at FROM briefings ORDER BY created_at DESC LIMIT 1'
+    ).get() as {
+      id: string; type: string; domain: string | null; content: string; created_at: string
+    } | undefined) ?? null
+  }
+
+  async listBriefings(limit = 10, type?: string): Promise<{
+    id: string
+    type: string
+    domain: string | null
+    content: string
+    created_at: string
+  }[]> {
+    if (!this.ready) return []
+
+    if (type) {
+      return this.db.prepare(
+        'SELECT id, type, domain, content, created_at FROM briefings WHERE type = ? ORDER BY created_at DESC LIMIT ?'
+      ).all(type, limit) as {
+        id: string; type: string; domain: string | null; content: string; created_at: string
+      }[]
+    }
+
+    return this.db.prepare(
+      'SELECT id, type, domain, content, created_at FROM briefings ORDER BY created_at DESC LIMIT ?'
+    ).all(limit) as {
+      id: string; type: string; domain: string | null; content: string; created_at: string
+    }[]
+  }
+
+  // ─── Advisors ──────────────────────────────────────────────────────────
+
+  async listAdvisors(expertise?: string): Promise<Advisor[]> {
+    if (!this.ready) return []
+
+    const rows = this.db.prepare(
+      'SELECT * FROM advisors ORDER BY name ASC'
+    ).all() as (Omit<Advisor, 'expertise'> & { expertise: string })[]
+
+    const parsed = rows.map(parseAdvisorRow)
+
+    if (expertise) {
+      return parsed.filter(a => a.expertise.some(e => e.toLowerCase().includes(expertise.toLowerCase())))
+    }
+
+    return parsed
+  }
+
+  async getAdvisor(id: string): Promise<Advisor | null> {
+    if (!this.ready) return null
+
+    const row = this.db.prepare(
+      'SELECT * FROM advisors WHERE id = ?'
+    ).get(id) as (Omit<Advisor, 'expertise'> & { expertise: string }) | undefined
+
+    return row ? parseAdvisorRow(row) : null
+  }
+
+  async getAdvisorByName(name: string): Promise<Advisor | null> {
+    if (!this.ready) return null
+
+    const row = this.db.prepare(
+      'SELECT * FROM advisors WHERE name = ?'
+    ).get(name) as (Omit<Advisor, 'expertise'> & { expertise: string }) | undefined
+
+    return row ? parseAdvisorRow(row) : null
+  }
+
   // ─── Feedback ───────────────────────────────────────────────────────────
 
   async saveFeedback(entry: {
@@ -990,22 +1003,17 @@ function parseSqliteProject(row: Record<string, unknown>): Project {
     name: String(row.name),
     slug: String(row.slug),
     description: row.description != null ? String(row.description) : null,
-    domain: row.domain != null ? String(row.domain) : null,
-    status: String(row.status) as ProjectStatus,
-    goals: JSON.parse(String(row.goals ?? '[]')),
-    quarterly_goal: row.quarterly_goal != null ? String(row.quarterly_goal) : null,
-    milestones: JSON.parse(String(row.milestones ?? '[]')),
+    domain: String(row.domain ?? ''),
+    status: String(row.status) as Project['status'],
     priority: Number(row.priority),
+    domain_goal_id: row.domain_goal_id != null ? String(row.domain_goal_id) : null,
     north_star: row.north_star != null ? String(row.north_star) : null,
     guardrails: JSON.parse(String(row.guardrails ?? '[]')),
-    domain_goal_id: row.domain_goal_id != null ? String(row.domain_goal_id) : null,
     infrastructure: JSON.parse(String(row.infrastructure ?? '{}')),
     refinement_cadence: (row.refinement_cadence as Project['refinement_cadence']) ?? 'weekly',
     last_refinement_at: row.last_refinement_at != null ? String(row.last_refinement_at) : null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
-    completed_at: row.completed_at != null ? String(row.completed_at) : null,
-    metadata: JSON.parse(String(row.metadata ?? '{}')),
   }
 }
 
@@ -1024,3 +1032,9 @@ function parseSqlitePlanningSession(row: Record<string, unknown>): PlanningSessi
   }
 }
 
+function parseAdvisorRow(row: Omit<Advisor, 'expertise'> & { expertise: string }): Advisor {
+  return {
+    ...row,
+    expertise: JSON.parse(row.expertise ?? '[]') as string[],
+  }
+}
