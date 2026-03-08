@@ -496,6 +496,80 @@ export function createInternalToolServer(
     }
   )
 
+  // ─── Briefing Tools ──────────────────────────────────────────────────────────
+
+  const saveBriefing = tool(
+    'save_briefing',
+    'Save a briefing (morning dashboard, closeout, or weekly review). Used by scheduled tasks and interactive sessions.',
+    {
+      type: z.enum(['morning', 'closeout', 'weekly_review', 'custom']).describe('Briefing type'),
+      content: z.string().describe('Briefing content in markdown'),
+      domain: z.string().optional().describe('Domain scope (omit for cross-domain)'),
+    },
+    async (args) => {
+      try {
+        const id = await data.saveBriefing(args.type, args.content, args.domain)
+        return { content: [{ type: 'text' as const, text: `Briefing saved: ${id}` }] }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const getLatestBriefing = tool(
+    'get_latest_briefing',
+    'Get the most recent briefing, optionally filtered by type.',
+    {
+      type: z.enum(['morning', 'closeout', 'weekly_review', 'custom']).optional().describe('Filter by briefing type'),
+    },
+    async (args) => {
+      try {
+        const briefing = await data.getLatestBriefing(args.type)
+        if (!briefing) return { content: [{ type: 'text' as const, text: 'No briefings found.' }] }
+        return { content: [{ type: 'text' as const, text: `**${briefing.type}** (${briefing.created_at})\n\n${briefing.content}` }] }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  // ─── Advisor Tools ──────────────────────────────────────────────────────────
+
+  const listAdvisors = tool(
+    'list_advisors',
+    'List available advisors, optionally filtered by expertise area (e.g., "pricing", "product", "leadership").',
+    {
+      expertise: z.string().optional().describe('Filter by expertise keyword'),
+    },
+    async (args) => {
+      try {
+        const advisors = await data.listAdvisors(args.expertise)
+        if (advisors.length === 0) return { content: [{ type: 'text' as const, text: 'No advisors found.' }] }
+        const text = advisors.map(a => `**${a.display_name}** (${a.role})\nExpertise: ${a.expertise.join(', ')}`).join('\n\n')
+        return { content: [{ type: 'text' as const, text }] }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const getAdvisorPrompt = tool(
+    'get_advisor_prompt',
+    "Get an advisor's full system prompt for consultation. Use when a conversation topic matches an advisor's expertise.",
+    {
+      name: z.string().describe('Advisor name slug (e.g., "steve-jobs", "warren-buffett")'),
+    },
+    async (args) => {
+      try {
+        const advisor = await data.getAdvisorByName(args.name)
+        if (!advisor) return errorResult(`Advisor "${args.name}" not found.`)
+        return { content: [{ type: 'text' as const, text: advisor.system_prompt }] }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
   // ─── Context Tools ─────────────────────────────────────────────────────────
 
   const updateMasterPlanSection = tool(
@@ -950,6 +1024,10 @@ export function createInternalToolServer(
     listProjects, createProject, updateProject,
     // Planning
     getPlanningContext, capturePlanningSummary,
+    // Briefings
+    saveBriefing, getLatestBriefing,
+    // Advisors
+    listAdvisors, getAdvisorPrompt,
     // Context
     updateMasterPlanSection,
     // Knowledge Base
