@@ -390,7 +390,7 @@ export class Runtime {
   }
 
   /** Sync build for backward compatibility (sub-agents, etc.) */
-  private buildPrompt(): string {
+  buildPrompt(): string {
     // Get isolation zone for active domain
     const domainContext = this.activeDomain
       ? this.context.domains.get(this.activeDomain)
@@ -471,6 +471,46 @@ export class Runtime {
     }
 
     yield { type: 'done', content: '' }
+  }
+
+  /**
+   * Run a task as a specific agent persona.
+   * Loads the agent's skill, prepends their persona prompt to the system prompt,
+   * and executes via SubAgentManager. Returns the agent's output.
+   *
+   * Usage: runtime.runAsAgent('agent-celine', 'Draft outreach email for Sunrise Coffee')
+   */
+  async runAsAgent(agentSkillId: string, task: string, opts?: { maxTurns?: number }): Promise<SubAgentResult> {
+    const skill = this.skills.get(agentSkillId) ?? this.skills.get(`agent-${agentSkillId}`)
+    if (!skill) {
+      return { id: agentSkillId, name: agentSkillId, content: '', toolLog: [], success: false, error: `Agent skill "${agentSkillId}" not found` }
+    }
+
+    // Switch domain if agent has one
+    const prevDomain = this.activeDomain
+    if (skill.domain) {
+      try { this.setDomain(skill.domain) } catch { /* proceed */ }
+    }
+
+    const basePrompt = this.buildPrompt()
+    const { buildAgentSystemPrompt } = await import('./task-executor.js')
+    const agentSystemPrompt = buildAgentSystemPrompt(skill, basePrompt)
+    const manager = new SubAgentManager(this.router, agentSystemPrompt, this.mcpServers)
+
+    const result = await manager.run({
+      id: agentSkillId,
+      name: skill.name,
+      task,
+      maxTurns: opts?.maxTurns ?? 15,
+      domain: skill.domain,
+    })
+
+    // Restore domain
+    if (skill.domain && prevDomain !== this.activeDomain) {
+      this.setDomain(prevDomain)
+    }
+
+    return result
   }
 
   /** Semantic search across memories (requires embeddings + Supabase) */

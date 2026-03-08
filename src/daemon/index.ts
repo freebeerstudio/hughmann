@@ -19,7 +19,8 @@ import type { Runtime } from '../runtime/runtime.js'
 import { loadStats, saveStats, canExecuteTask, recordSuccess, recordFailure, getStatsSummary, DEFAULT_GUARDRAIL_CONFIG, type DaemonStats, type GuardrailConfig } from './guardrails.js'
 import { appendProgress } from './progress.js'
 import { runProactiveChecks } from './proactive.js'
-import { buildTaskPrompt, selectBestTask, recordTaskResult } from '../runtime/task-executor.js'
+import { buildTaskPrompt, buildAgentSystemPrompt, selectBestTask, recordTaskResult } from '../runtime/task-executor.js'
+import { SubAgentManager } from '../runtime/sub-agents.js'
 import { createDaemonLogger } from '../util/logger.js'
 
 const DAEMON_DIR = join(HUGHMANN_HOME, 'daemon')
@@ -598,16 +599,40 @@ async function processTaskQueue(
     (query, opts) => runtime.memory.searchSemantic(query, opts),
   )
 
+  // Check if task is assigned to an agent persona
+  const agentId = task.assigned_agent_id ?? task.assignee
+  const agentSkill = agentId ? runtime.skills.get(agentId) ?? runtime.skills.get(`agent-${agentId}`) : null
+
   try {
-    const chunks: string[] = []
-    for await (const chunk of runtime.doTaskStream(prompt, {
-      maxTurns: config.maxTurnsPerTask,
-      cwd: task.cwd ?? undefined,
-    })) {
-      if (chunk.type === 'text') chunks.push(chunk.content)
+    let result: string
+
+    if (agentSkill) {
+      // Execute as agent persona via SubAgentManager
+      log(`[TaskQueue] Running as agent: ${agentSkill.name}`)
+      const basePrompt = runtime.buildPrompt()
+      const agentSystemPrompt = buildAgentSystemPrompt(agentSkill, basePrompt)
+      const manager = new SubAgentManager(runtime.router, agentSystemPrompt, runtime.mcpServers)
+      const agentResult = await manager.run({
+        id: task.id,
+        name: agentSkill.name,
+        task: prompt,
+        maxTurns: config.maxTurnsPerTask,
+        domain: task.domain ?? undefined,
+      })
+      result = agentResult.content
+      if (!agentResult.success) throw new Error(agentResult.error ?? 'Agent execution failed')
+    } else {
+      // Execute as Hugh (default)
+      const chunks: string[] = []
+      for await (const chunk of runtime.doTaskStream(prompt, {
+        maxTurns: config.maxTurnsPerTask,
+        cwd: task.cwd ?? undefined,
+      })) {
+        if (chunk.type === 'text') chunks.push(chunk.content)
+      }
+      result = chunks.join('')
     }
 
-    const result = chunks.join('')
     const summary = result.length > 500 ? result.slice(0, 500) + '...' : result
 
     // Record result via shared module + daemon-specific tracking

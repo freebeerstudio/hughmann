@@ -11,10 +11,11 @@
 
 import type { DataAdapter } from '../adapters/data/types.js'
 import type { Task } from '../types/tasks.js'
+import type { Skill } from './skills.js'
 
 /**
  * Build a rich prompt for task execution.
- * Includes project context and relevant memories if available.
+ * Includes project context (North Star, guardrails) and relevant memories.
  */
 export async function buildTaskPrompt(
   task: Task,
@@ -26,6 +27,7 @@ export async function buildTaskPrompt(
   if (task.project) prompt += `**Project**: ${task.project}\n`
   if (task.domain) prompt += `**Domain**: ${task.domain}\n`
   if (task.due_date) prompt += `**Due**: ${task.due_date}\n`
+  if (task.sprint) prompt += `**Sprint**: ${task.sprint}\n`
 
   // Load project context if task has a project_id
   if (task.project_id && data) {
@@ -34,7 +36,13 @@ export async function buildTaskPrompt(
       if (project) {
         prompt += `\n**Project Context**:\n`
         prompt += `  Name: ${project.name}\n`
-        if (project.quarterly_goal) prompt += `  Quarterly Goal: ${project.quarterly_goal}\n`
+        if (project.north_star) prompt += `  North Star: ${project.north_star}\n`
+        if (project.guardrails && project.guardrails.length > 0) {
+          prompt += `  Guardrails:\n`
+          for (const g of project.guardrails) {
+            prompt += `    - ${g}\n`
+          }
+        }
         if (project.goals.length > 0) prompt += `  Goals: ${project.goals.join('; ')}\n`
         const activeMilestones = project.milestones.filter(m => !m.completed)
         if (activeMilestones.length > 0) {
@@ -64,6 +72,17 @@ export async function buildTaskPrompt(
 
   prompt += `\nComplete this task thoroughly. When done, provide a summary of what was accomplished.`
   return prompt
+}
+
+/**
+ * Build a system prompt for an agent persona executing a task.
+ * Combines the agent's persona prompt with the base system prompt.
+ */
+export function buildAgentSystemPrompt(
+  agentSkill: Skill,
+  baseSystemPrompt: string,
+): string {
+  return `${agentSkill.prompt}\n\n---\n\n${baseSystemPrompt}`
 }
 
 /** Priority selection — sort tasks by priority, type weight, and creation time */
