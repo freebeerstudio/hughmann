@@ -772,67 +772,54 @@ async function manageTrigger(flags: CliFlags) {
         process.exit(1)
       }
 
-      const files = readdirSync(contextDir).filter(f => f.endsWith('.md'))
-      console.log(`  ${pc.dim(`Found ${files.length} context files`)}`)
-
       const { SupabaseAdapter } = await import('./adapters/data/supabase.js') // eslint-disable-line @typescript-eslint/no-unused-vars
       const adapter = runtime.data as InstanceType<typeof SupabaseAdapter>
       const client = adapter.getClient()
 
-      let synced = 0
-      for (const file of files) {
-        const filePath = join(contextDir, file)
-        const content = readFileSync(filePath, 'utf-8')
-        const name = file.replace('.md', '')
-        const contentHash = createHash('sha256').update(content).digest('hex')
+      const domainsDir = join(contextDir, 'domains')
+      const typeMap: Record<string, string> = { soul: 'soul', owner: 'owner', 'master-plan': 'master-plan', capabilities: 'capabilities', growth: 'growth', habits: 'habits' }
 
-        // Extract title and type
+      // Collect all docs: core files + domain files
+      const docs: { id: string; doc_type: string; title: string; content: string; domain_slug: string | null; isolation_zone: string | null; content_hash: string }[] = []
+
+      // Core context files
+      const coreFiles = readdirSync(contextDir).filter(f => f.endsWith('.md'))
+      for (const file of coreFiles) {
+        const content = readFileSync(join(contextDir, file), 'utf-8')
+        const name = file.replace('.md', '')
         const titleMatch = content.match(/^#\s+(.+)/m)
         const title = titleMatch?.[1] ?? name
-        const nameLower = name.toLowerCase()
+        const contentHash = createHash('sha256').update(content).digest('hex')
+        const docType = typeMap[name.toLowerCase()] ?? 'other'
+        docs.push({ id: docType === 'other' ? name : docType, doc_type: docType, title, content, domain_slug: null, isolation_zone: null, content_hash: contentHash })
+      }
 
-        let docType = 'other'
-        let domainSlug: string | null = null
-        let isolationZone: string | null = null
-
-        if (nameLower.includes('soul')) docType = 'soul'
-        else if (nameLower.includes('owner')) docType = 'owner'
-        else if (nameLower.includes('master-plan')) docType = 'master-plan'
-        else if (nameLower.includes('capabilities')) docType = 'capabilities'
-        else if (nameLower.includes('growth')) docType = 'growth'
-        else {
-          const domainMatch = nameLower.match(/^domain-(\w+)$/)
-          if (domainMatch) {
-            docType = 'domain'
-            domainSlug = domainMatch[1]
-            const isoMatch = content.match(/isolation[:\s]+(isolated|personal)/i)
-            isolationZone = isoMatch?.[1]?.toLowerCase() ?? 'personal'
-          }
+      // Domain context files
+      if (existsSync(domainsDir)) {
+        const domainFiles = readdirSync(domainsDir).filter(f => f.endsWith('.md'))
+        for (const file of domainFiles) {
+          const content = readFileSync(join(domainsDir, file), 'utf-8')
+          const slug = file.replace('.md', '')
+          const titleMatch = content.match(/^#\s+(.+)/m)
+          const title = titleMatch?.[1] ?? slug
+          const contentHash = createHash('sha256').update(content).digest('hex')
+          const isoMatch = content.match(/isolation[:\s]+(isolated|personal)/i)
+          const isolation = isoMatch?.[1]?.toLowerCase() ?? 'personal'
+          docs.push({ id: `domain-${slug}`, doc_type: 'domain', title, content, domain_slug: slug, isolation_zone: isolation, content_hash: contentHash })
         }
+      }
 
-        // Check if unchanged
-        const { data: existing } = await client
-          .from('context_docs')
-          .select('content_hash')
-          .eq('id', docType === 'domain' ? `domain-${domainSlug}` : docType === 'other' ? name : docType)
-          .single()
+      console.log(`  ${pc.dim(`Found ${docs.length} context files`)}`)
 
-        if (existing?.content_hash === contentHash) continue
-
-        await client.from('context_docs').upsert({
-          id: docType === 'domain' ? `domain-${domainSlug}` : docType === 'other' ? name : docType,
-          doc_type: docType,
-          title,
-          content,
-          domain_slug: domainSlug,
-          isolation_zone: isolationZone,
-          content_hash: contentHash,
-          synced_at: new Date().toISOString(),
-        })
+      let synced = 0
+      for (const doc of docs) {
+        const { data: existing } = await client.from('context_docs').select('content_hash').eq('id', doc.id).single()
+        if (existing?.content_hash === doc.content_hash) continue
+        await client.from('context_docs').upsert({ ...doc, updated_at: new Date().toISOString() })
         synced++
       }
 
-      console.log(`  ${pc.green('✓')} Synced ${synced} context docs to Supabase (${files.length - synced} unchanged)`)
+      console.log(`  ${pc.green('✓')} Synced ${synced} context docs to Supabase (${docs.length - synced} unchanged)`)
       break
     }
 

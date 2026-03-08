@@ -32,17 +32,31 @@ export const syncContextDocs = task({
       return { success: false, error: 'Context directory not found' }
     }
 
-    const files = readdirSync(contextDir).filter(f => f.endsWith('.md'))
     const docs: ContextDoc[] = []
 
-    for (const file of files) {
+    // Read core context files (soul.md, owner.md, master-plan.md, etc.)
+    const coreFiles = readdirSync(contextDir).filter(f => f.endsWith('.md'))
+    for (const file of coreFiles) {
       const filePath = join(contextDir, file)
       const content = readFileSync(filePath, 'utf-8')
       const name = basename(file, extname(file))
       const contentHash = createHash('sha256').update(content).digest('hex')
-
-      const doc = parseContextFile(name, content, contentHash)
+      const doc = parseCoreFile(name, content, contentHash)
       if (doc) docs.push(doc)
+    }
+
+    // Read domain context files (domains/*.md)
+    const domainsDir = join(contextDir, 'domains')
+    if (existsSync(domainsDir)) {
+      const domainFiles = readdirSync(domainsDir).filter(f => f.endsWith('.md'))
+      for (const file of domainFiles) {
+        const filePath = join(domainsDir, file)
+        const content = readFileSync(filePath, 'utf-8')
+        const slug = basename(file, extname(file))
+        const contentHash = createHash('sha256').update(content).digest('hex')
+        const doc = parseDomainFile(slug, content, contentHash)
+        docs.push(doc)
+      }
     }
 
     // Upsert all docs
@@ -70,7 +84,7 @@ export const syncContextDocs = task({
         domain_slug: doc.domain_slug,
         isolation_zone: doc.isolation_zone,
         content_hash: doc.content_hash,
-        synced_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       })
       synced++
     }
@@ -79,49 +93,43 @@ export const syncContextDocs = task({
   },
 })
 
-function parseContextFile(name: string, content: string, hash: string): ContextDoc | null {
-  // Extract title from first heading
+function parseCoreFile(name: string, content: string, hash: string): ContextDoc | null {
   const titleMatch = content.match(/^#\s+(.+)/m)
   const title = titleMatch?.[1] ?? name
 
-  // Detect document type from name or content
-  const nameLower = name.toLowerCase()
-
-  if (nameLower.includes('soul')) {
-    return { id: 'soul', doc_type: 'soul', title, content, domain_slug: null, isolation_zone: null, content_hash: hash }
-  }
-  if (nameLower.includes('owner')) {
-    return { id: 'owner', doc_type: 'owner', title, content, domain_slug: null, isolation_zone: null, content_hash: hash }
-  }
-  if (nameLower.includes('master-plan') || nameLower.includes('masterplan')) {
-    return { id: 'master-plan', doc_type: 'master-plan', title, content, domain_slug: null, isolation_zone: null, content_hash: hash }
-  }
-  if (nameLower.includes('capabilities')) {
-    return { id: 'capabilities', doc_type: 'capabilities', title, content, domain_slug: null, isolation_zone: null, content_hash: hash }
-  }
-  if (nameLower.includes('growth')) {
-    return { id: 'growth', doc_type: 'growth', title, content, domain_slug: null, isolation_zone: null, content_hash: hash }
+  const typeMap: Record<string, string> = {
+    soul: 'soul',
+    owner: 'owner',
+    'master-plan': 'master-plan',
+    capabilities: 'capabilities',
+    growth: 'growth',
+    habits: 'habits',
   }
 
-  // Domain documents (format: domain-<slug>.md)
-  const domainMatch = nameLower.match(/^domain-(\w+)$/)
-  if (domainMatch) {
-    const slug = domainMatch[1]
-    // Extract isolation from content
-    const isoMatch = content.match(/isolation[:\s]+(isolated|personal)/i)
-    const isolation = isoMatch?.[1]?.toLowerCase() ?? 'personal'
-
-    return {
-      id: `domain-${slug}`,
-      doc_type: 'domain',
-      title,
-      content,
-      domain_slug: slug,
-      isolation_zone: isolation,
-      content_hash: hash,
-    }
+  const docType = typeMap[name.toLowerCase()]
+  if (!docType) {
+    // Generic document
+    return { id: name, doc_type: 'other', title, content, domain_slug: null, isolation_zone: null, content_hash: hash }
   }
 
-  // Generic document
-  return { id: name, doc_type: 'other', title, content, domain_slug: null, isolation_zone: null, content_hash: hash }
+  return { id: docType, doc_type: docType, title, content, domain_slug: null, isolation_zone: null, content_hash: hash }
+}
+
+function parseDomainFile(slug: string, content: string, hash: string): ContextDoc {
+  const titleMatch = content.match(/^#\s+(.+)/m)
+  const title = titleMatch?.[1] ?? slug
+
+  // Extract isolation zone from content
+  const isoMatch = content.match(/isolation[:\s]+(isolated|personal)/i)
+  const isolation = isoMatch?.[1]?.toLowerCase() ?? 'personal'
+
+  return {
+    id: `domain-${slug}`,
+    doc_type: 'domain',
+    title,
+    content,
+    domain_slug: slug,
+    isolation_zone: isolation,
+    content_hash: hash,
+  }
 }
