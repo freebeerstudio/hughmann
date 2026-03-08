@@ -14,7 +14,7 @@ import { SubAgentManager } from './sub-agents.js'
 import type { SubAgent, SubAgentResult } from './sub-agents.js'
 import { ContextWatcher } from './watcher.js'
 
-const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000 // 2 hours
+const STALE_THRESHOLD_MS = 10 * 60 * 1000 // 10 minutes — shorter gap = more frequent distillation
 const DISTILL_INTERVAL = 10 // every 10 turns (5 user + 5 assistant)
 
 /**
@@ -253,24 +253,51 @@ export class Runtime {
       }
     }
 
-    // Stale session — distill if not already done, then start fresh
+    // Session is stale or empty — distill if not already done, then start fresh
     if (latest.messageCount > 0 && !this.memory.isDistilled(latest.id)) {
       const session = this.sessions.load(latest.id)
       if (session) {
         const result = await this.memory.distill(session)
         if (result) {
           this.memory.markDistilled(latest.id)
+          // Full pipeline: save to Supabase + generate embedding (same as distillCurrent)
+          this.data?.saveMemory({
+            sessionId: session.id,
+            domain: session.domain,
+            content: result,
+            date: new Date().toISOString().split('T')[0],
+          }).catch(() => {})
+          this.memory.embedAndStore(result, session.id, session.domain).catch(() => {})
         }
       }
-      this.sessions.create(this.activeDomain)
-      return {
-        action: 'distilled',
-        message: `Distilled previous session. New session started.`,
+    }
+
+    // Also distill any other recent undistilled sessions (catch sessions that
+    // were abandoned without distillation — this is the main context loss fix)
+    for (const s of sessions.slice(1, 5)) {
+      if (s.messageCount > 2 && !this.memory.isDistilled(s.id)) {
+        const session = this.sessions.load(s.id)
+        if (session) {
+          const result = await this.memory.distill(session)
+          if (result) {
+            this.memory.markDistilled(s.id)
+            this.data?.saveMemory({
+              sessionId: session.id,
+              domain: session.domain,
+              content: result,
+              date: new Date().toISOString().split('T')[0],
+            }).catch(() => {})
+            this.memory.embedAndStore(result, session.id, session.domain).catch(() => {})
+          }
+        }
       }
     }
 
     this.sessions.create(this.activeDomain)
-    return { action: 'new', message: 'New session started.' }
+    return {
+      action: 'distilled',
+      message: `Distilled previous session. New session started.`,
+    }
   }
 
   /** Distill the current session on demand */
