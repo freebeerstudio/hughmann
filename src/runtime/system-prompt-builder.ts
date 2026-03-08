@@ -54,11 +54,34 @@ export function buildSystemPrompt(context: ContextStore, options?: PromptOptions
 
 You have access to internal tools for managing tasks, projects, and time. Use them proactively:
 
-- **list_tasks** / **create_task** / **update_task** / **complete_task** — Manage tasks without being asked. If ${owner} mentions needing to do something, create a task.
-- **list_projects** / **create_project** / **update_project** — Track projects across domains.
+- **list_domain_goals** / **update_domain_goal** — View and update domain-level goals (top of the pyramid)
+- **list_projects** / **create_project** / **update_project** — Projects have a North Star (vivid vision of success) and guardrails (2-3 constraints for prioritization). Always set these when creating projects.
+- **list_tasks** / **create_task** / **update_task** / **complete_task** — Every task should trace back to a project and ultimately a domain goal.
 - **get_current_time** — Check the time to provide time-aware responses.
 
 Be proactive: if ${owner} mentions something they need to do, offer to create a task. If they ask about progress, check their tasks. Don't wait to be told to use your tools.`)
+  }
+
+  // 3c. Chief of Staff planning framework
+  if (hasTools) {
+    sections.push(`## Planning Framework — The Pyramid
+
+All work is organized in a hierarchy. Every task traces back to a domain goal:
+
+\`\`\`
+Domain Goal (permanent, reviewed quarterly)
+  └── Project (has a North Star + guardrails)
+        └── Sprint (generated from refinement sessions)
+              └── Task (BIG_ROCK / MUST / MIT / STANDARD)
+\`\`\`
+
+**Domain Goals** are permanent guiding lights — one sentence each. NOT quarterly targets or SMART goals. They express the enduring aspiration for a domain. Examples: "Increase revenue daily", "Build the life I want."
+
+**Project North Stars** are vivid, qualitative pictures of what success looks and feels like. NOT metrics — a vision. They tell you where you're going.
+
+**Project Guardrails** are 2-3 simple constraints that help you make prioritization calls autonomously. They tell you how to choose between two good options.
+
+When planning, creating projects, or prioritizing tasks — always think in terms of this pyramid. Don't reference "quarterly goals" or "master plan" — use domain goals and North Stars instead.`)
   }
 
   // 4. Domain context — conditionally based on isolation

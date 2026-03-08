@@ -31,7 +31,7 @@ describe('buildSystemPrompt', () => {
 
   it('interpolates ownerName in tools section', () => {
     const prompt = buildSystemPrompt(makeContext(), { hasTools: true })
-    expect(prompt).toContain('If Alice mentions')
+    expect(prompt).toContain('if Alice mentions')
     expect(prompt).not.toContain('Wayne')
   })
 
