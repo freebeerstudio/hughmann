@@ -2,7 +2,8 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { randomUUID } from 'node:crypto'
 import type { DataAdapter } from './types.js'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, Milestone, DomainGoal } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
+import type { Advisor } from '../../types/advisors.js'
 
 export interface SupabaseConfig {
   url: string
@@ -11,13 +12,7 @@ export interface SupabaseConfig {
 
 /**
  * Supabase data adapter for structured persistence.
- * Syncs sessions, memories, decisions, and domain data to Supabase tables.
- *
- * Tables:
- *   sessions       - Chat sessions with messages
- *   memories       - Distilled memory entries
- *   decisions      - Decision log entries
- *   domain_notes   - Per-domain notes and context
+ * Syncs sessions, memories, briefings, advisors, and domain data to Supabase tables.
  */
 export class SupabaseAdapter implements DataAdapter {
   private client: SupabaseClient
@@ -154,81 +149,7 @@ export class SupabaseAdapter implements DataAdapter {
     return data ?? []
   }
 
-  // ─── Decisions ────────────────────────────────────────────────────────
-
-  async logDecision(entry: {
-    decision: string
-    reasoning: string
-    domain: string
-  }): Promise<void> {
-    if (!this.ready) return
-
-    await this.client.from('decisions').insert({
-      decision: entry.decision,
-      reasoning: entry.reasoning,
-      domain: entry.domain,
-    })
-  }
-
-  async getDecisions(domain?: string, limit = 20): Promise<{
-    decision: string
-    reasoning: string
-    domain: string
-    created_at: string
-  }[]> {
-    if (!this.ready) return []
-
-    let query = this.client
-      .from('decisions')
-      .select('decision, reasoning, domain, created_at')
-      .order('created_at', { ascending: false })
-      .limit(limit)
-
-    if (domain) {
-      query = query.eq('domain', domain)
-    }
-
-    const { data } = await query
-    return data ?? []
-  }
-
-  // ─── Domain Notes ─────────────────────────────────────────────────────
-
-  async addDomainNote(entry: {
-    domain: string
-    content: string
-    source: string
-  }): Promise<void> {
-    if (!this.ready) return
-
-    await this.client.from('domain_notes').insert({
-      domain: entry.domain,
-      content: entry.content,
-      source: entry.source,
-    })
-  }
-
-  async getDomainNotes(domain: string, limit = 50): Promise<{
-    content: string
-    source: string
-    created_at: string
-  }[]> {
-    if (!this.ready) return []
-
-    const { data } = await this.client
-      .from('domain_notes')
-      .select('content, source, created_at')
-      .eq('domain', domain)
-      .order('created_at', { ascending: false })
-      .limit(limit)
-
-    return data ?? []
-  }
-
   // ─── Vector Memory ──────────────────────────────────────────────────────
-  //
-  // Uses the existing PAI memory_embeddings table schema (UUID ids, no FK to memories).
-  // Columns: id, content, domain, embedding, source, memory_type, importance, metadata, etc.
 
   async saveMemoryEmbedding(entry: {
     memoryId: number
@@ -432,8 +353,11 @@ export class SupabaseAdapter implements DataAdapter {
     if (filters?.domain) {
       query = query.eq('domain', filters.domain)
     }
-    if (filters?.project) {
-      query = query.eq('project', filters.project)
+    if (filters?.project_id) {
+      query = query.eq('project_id', filters.project_id)
+    }
+    if (filters?.assignee) {
+      query = query.eq('assignee', filters.assignee)
     }
     if (filters?.task_type) {
       if (Array.isArray(filters.task_type)) {
@@ -457,9 +381,8 @@ export class SupabaseAdapter implements DataAdapter {
       title: input.title,
       description: input.description ?? null,
       status: input.status ?? 'todo',
-      task_type: input.task_type ?? 'STANDARD',
+      task_type: input.task_type ?? 'standard',
       domain: input.domain ?? null,
-      project: input.project ?? null,
       project_id: input.project_id ?? null,
       priority: input.priority ?? 3,
       due_date: input.due_date ?? null,
@@ -554,39 +477,27 @@ export class SupabaseAdapter implements DataAdapter {
   async createProject(input: CreateProjectInput): Promise<Project> {
     const now = new Date().toISOString()
     const slug = input.slug ?? input.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-    const milestones: Milestone[] = (input.milestones ?? []).map(m => ({
-      id: randomUUID(),
-      title: m.title,
-      target_date: m.target_date ?? null,
-      completed: false,
-      completed_at: null,
-    }))
 
     const row = {
       id: randomUUID(),
       name: input.name,
       slug,
       description: input.description ?? null,
-      domain: input.domain ?? null,
+      domain: input.domain,
       status: input.status ?? 'planning',
-      goals: input.goals ?? [],
-      quarterly_goal: input.quarterly_goal ?? null,
-      milestones,
       priority: input.priority ?? 3,
       north_star: input.north_star ?? null,
       guardrails: input.guardrails ?? [],
-      domain_goal_id: null,
+      domain_goal_id: input.domain_goal_id ?? null,
       infrastructure: input.infrastructure ?? {},
       refinement_cadence: input.refinement_cadence ?? 'weekly',
       last_refinement_at: null,
       created_at: now,
       updated_at: now,
-      completed_at: null,
-      metadata: input.metadata ?? {},
     }
 
     await this.client.from('projects').insert(row)
-    return row as Project
+    return parseProject(row)
   }
 
   async updateProject(id: string, input: UpdateProjectInput): Promise<Project | null> {
@@ -706,6 +617,47 @@ export class SupabaseAdapter implements DataAdapter {
     return (data as PlanningSessionRecord) ?? null
   }
 
+  // ─── Briefings ───────────────────────────────────────────────────────────
+
+  async saveBriefing(type: 'morning' | 'closeout' | 'weekly_review' | 'custom', content: string, domain?: string): Promise<string> {
+    const id = randomUUID()
+    await this.client.from('briefings').insert({ id, type, content, domain: domain ?? null })
+    return id
+  }
+
+  async getLatestBriefing(type?: string): Promise<{ id: string; type: string; domain: string | null; content: string; created_at: string } | null> {
+    let query = this.client.from('briefings').select('*').order('created_at', { ascending: false }).limit(1)
+    if (type) query = query.eq('type', type)
+    const { data } = await query
+    return data?.[0] ?? null
+  }
+
+  async listBriefings(limit?: number, type?: string): Promise<{ id: string; type: string; domain: string | null; content: string; created_at: string }[]> {
+    let query = this.client.from('briefings').select('*').order('created_at', { ascending: false }).limit(limit ?? 10)
+    if (type) query = query.eq('type', type)
+    const { data } = await query
+    return data ?? []
+  }
+
+  // ─── Advisors ────────────────────────────────────────────────────────────
+
+  async listAdvisors(expertise?: string): Promise<Advisor[]> {
+    let query = this.client.from('advisors').select('*').order('name')
+    if (expertise) query = query.contains('expertise', [expertise])
+    const { data } = await query
+    return (data ?? []) as Advisor[]
+  }
+
+  async getAdvisor(id: string): Promise<Advisor | null> {
+    const { data } = await this.client.from('advisors').select('*').eq('id', id).single()
+    return (data as Advisor) ?? null
+  }
+
+  async getAdvisorByName(name: string): Promise<Advisor | null> {
+    const { data } = await this.client.from('advisors').select('*').eq('name', name).single()
+    return (data as Advisor) ?? null
+  }
+
   // ─── Feedback ───────────────────────────────────────────────────────────
 
   async saveFeedback(entry: {
@@ -717,11 +669,10 @@ export class SupabaseAdapter implements DataAdapter {
   }): Promise<void> {
     if (!this.ready) return
     await this.client.from('feedback').insert({
+      session_id: null,
       category: entry.category,
       signal: entry.signal,
       content: entry.content,
-      context: entry.context ?? null,
-      domain: entry.domain ?? null,
     })
   }
 
@@ -755,22 +706,17 @@ function parseProject(row: Record<string, unknown>): Project {
     name: String(row.name),
     slug: String(row.slug),
     description: row.description != null ? String(row.description) : null,
-    domain: row.domain != null ? String(row.domain) : null,
+    domain: String(row.domain),
     status: String(row.status) as Project['status'],
-    goals: Array.isArray(row.goals) ? row.goals as string[] : [],
-    quarterly_goal: row.quarterly_goal != null ? String(row.quarterly_goal) : null,
-    milestones: Array.isArray(row.milestones) ? row.milestones as Milestone[] : [],
     priority: Number(row.priority),
+    domain_goal_id: row.domain_goal_id != null ? String(row.domain_goal_id) : null,
     north_star: row.north_star != null ? String(row.north_star) : null,
     guardrails: Array.isArray(row.guardrails) ? row.guardrails as string[] : [],
-    domain_goal_id: row.domain_goal_id != null ? String(row.domain_goal_id) : null,
     infrastructure: (row.infrastructure && typeof row.infrastructure === 'object') ? row.infrastructure as Project['infrastructure'] : {},
     refinement_cadence: (row.refinement_cadence as Project['refinement_cadence']) ?? 'weekly',
     last_refinement_at: row.last_refinement_at != null ? String(row.last_refinement_at) : null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
-    completed_at: row.completed_at != null ? String(row.completed_at) : null,
-    metadata: (row.metadata && typeof row.metadata === 'object') ? row.metadata as Record<string, unknown> : {},
   }
 }
 
@@ -823,31 +769,6 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE INDEX IF NOT EXISTS idx_memories_date ON memories (memory_date DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_domain ON memories (domain);
 
--- Decisions table
-CREATE TABLE IF NOT EXISTS decisions (
-  id BIGSERIAL PRIMARY KEY,
-  decision TEXT NOT NULL,
-  reasoning TEXT,
-  domain TEXT NOT NULL DEFAULT 'General',
-  customer_id UUID,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_decisions_domain ON decisions (domain);
-CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions (created_at DESC);
-
--- Domain notes table
-CREATE TABLE IF NOT EXISTS domain_notes (
-  id BIGSERIAL PRIMARY KEY,
-  domain TEXT NOT NULL,
-  content TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'manual',
-  customer_id UUID,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_domain_notes_domain ON domain_notes (domain);
-
 -- Knowledge base nodes
 CREATE TABLE IF NOT EXISTS kb_nodes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -899,10 +820,14 @@ CREATE TABLE IF NOT EXISTS tasks (
   title TEXT NOT NULL,
   description TEXT,
   status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('backlog', 'todo', 'in_progress', 'done', 'blocked')),
-  task_type TEXT NOT NULL DEFAULT 'STANDARD' CHECK (task_type IN ('MUST', 'MIT', 'BIG_ROCK', 'STANDARD')),
+  task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('must', 'mit', 'big_rock', 'standard')),
   domain TEXT,
-  project TEXT,
+  project_id UUID REFERENCES projects(id),
+  sprint TEXT,
   priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
+  assignee TEXT,
+  assigned_agent_id TEXT,
+  blocked_reason TEXT,
   due_date TEXT,
   cwd TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -915,6 +840,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
 CREATE INDEX IF NOT EXISTS idx_tasks_domain ON tasks (domain);
 CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks (priority);
 CREATE INDEX IF NOT EXISTS idx_tasks_type ON tasks (task_type);
+CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks (project_id);
 
 -- Projects table
 CREATE TABLE IF NOT EXISTS projects (
@@ -922,16 +848,17 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   slug TEXT NOT NULL UNIQUE,
   description TEXT,
-  domain TEXT,
+  domain TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'paused', 'completed', 'archived', 'incubator')),
-  goals JSONB NOT NULL DEFAULT '[]',
-  quarterly_goal TEXT,
-  milestones JSONB NOT NULL DEFAULT '[]',
   priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
+  domain_goal_id UUID,
+  north_star TEXT,
+  guardrails JSONB NOT NULL DEFAULT '[]',
+  infrastructure JSONB NOT NULL DEFAULT '{}',
+  refinement_cadence TEXT NOT NULL DEFAULT 'weekly',
+  last_refinement_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  completed_at TIMESTAMPTZ,
-  metadata JSONB NOT NULL DEFAULT '{}'
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_domain ON projects (domain);
@@ -954,52 +881,6 @@ CREATE TABLE IF NOT EXISTS planning_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_planning_sessions_created ON planning_sessions (created_at DESC);
 
--- Add project_id to tasks (optional FK)
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'project_id') THEN
-    ALTER TABLE tasks ADD COLUMN project_id UUID REFERENCES projects(id);
-    CREATE INDEX idx_tasks_project_id ON tasks (project_id);
-  END IF;
-END $$;
-
--- Add agent assignment fields to tasks
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'assignee') THEN
-    ALTER TABLE tasks ADD COLUMN assignee TEXT;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'assigned_agent_id') THEN
-    ALTER TABLE tasks ADD COLUMN assigned_agent_id TEXT;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'blocked_reason') THEN
-    ALTER TABLE tasks ADD COLUMN blocked_reason TEXT;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'sprint') THEN
-    ALTER TABLE tasks ADD COLUMN sprint TEXT;
-  END IF;
-END $$;
-
--- Add north star / guardrails fields to projects
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'north_star') THEN
-    ALTER TABLE projects ADD COLUMN north_star TEXT;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'guardrails') THEN
-    ALTER TABLE projects ADD COLUMN guardrails JSONB NOT NULL DEFAULT '[]';
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'domain_goal_id') THEN
-    ALTER TABLE projects ADD COLUMN domain_goal_id UUID;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'infrastructure') THEN
-    ALTER TABLE projects ADD COLUMN infrastructure JSONB NOT NULL DEFAULT '{}';
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'refinement_cadence') THEN
-    ALTER TABLE projects ADD COLUMN refinement_cadence TEXT NOT NULL DEFAULT 'weekly';
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'last_refinement_at') THEN
-    ALTER TABLE projects ADD COLUMN last_refinement_at TIMESTAMPTZ;
-  END IF;
-END $$;
-
 -- Domain goals table
 CREATE TABLE IF NOT EXISTS domain_goals (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1013,7 +894,43 @@ CREATE TABLE IF NOT EXISTS domain_goals (
 
 CREATE INDEX IF NOT EXISTS idx_domain_goals_domain ON domain_goals (domain);
 
-ALTER TABLE domain_goals ENABLE ROW LEVEL SECURITY;
+-- Briefings table
+CREATE TABLE IF NOT EXISTS briefings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  type TEXT NOT NULL CHECK (type IN ('morning', 'closeout', 'weekly_review', 'custom')),
+  domain TEXT,
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_briefings_type ON briefings (type);
+CREATE INDEX IF NOT EXISTS idx_briefings_created ON briefings (created_at DESC);
+
+-- Advisors table
+CREATE TABLE IF NOT EXISTS advisors (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  role TEXT,
+  expertise TEXT[] NOT NULL DEFAULT '{}',
+  system_prompt TEXT NOT NULL,
+  avatar_url TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Feedback table
+CREATE TABLE IF NOT EXISTS feedback (
+  id BIGSERIAL PRIMARY KEY,
+  session_id TEXT,
+  signal TEXT NOT NULL CHECK (signal IN ('positive', 'negative', 'correction')),
+  category TEXT NOT NULL,
+  content TEXT NOT NULL,
+  domain TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback (category);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback (created_at DESC);
 
 -- Domain-to-customer mapping function
 CREATE OR REPLACE FUNCTION hughmann_customer_id(p_domain TEXT)
@@ -1072,14 +989,16 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- Enable Row Level Security
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
-ALTER TABLE decisions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE domain_notes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kb_nodes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kb_edges ENABLE ROW LEVEL SECURITY;
 ALTER TABLE context_docs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE planning_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE domain_goals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE briefings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE advisors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE feedback ENABLE ROW LEVEL SECURITY;
 
 -- Allow all operations for service key
 DO $$ BEGIN
@@ -1088,12 +1007,6 @@ DO $$ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'memories' AND policyname = 'Allow all for service key') THEN
     CREATE POLICY "Allow all for service key" ON memories FOR ALL USING (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'decisions' AND policyname = 'Allow all for service key') THEN
-    CREATE POLICY "Allow all for service key" ON decisions FOR ALL USING (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'domain_notes' AND policyname = 'Allow all for service key') THEN
-    CREATE POLICY "Allow all for service key" ON domain_notes FOR ALL USING (true);
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'kb_nodes' AND policyname = 'Allow all for service key') THEN
     CREATE POLICY "Allow all for service key" ON kb_nodes FOR ALL USING (true);
@@ -1115,6 +1028,15 @@ DO $$ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'domain_goals' AND policyname = 'Allow all for service key') THEN
     CREATE POLICY "Allow all for service key" ON domain_goals FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'briefings' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON briefings FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'advisors' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON advisors FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'feedback' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON feedback FOR ALL USING (true);
   END IF;
 END $$;
 `
