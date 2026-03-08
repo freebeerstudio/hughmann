@@ -10,6 +10,7 @@ import {
   getSupabaseClient,
   loadCloudContext,
   buildCloudPrompt,
+  buildPyramidContext,
   getCloudMemories,
   callModel,
   sendTelegram,
@@ -23,17 +24,21 @@ export const morningDashboard = schedules.task({
     const context = await loadCloudContext(client)
     const memories = await getCloudMemories(client, 3)
 
+    const pyramidContext = await buildPyramidContext(client)
+
     let systemPrompt = buildCloudPrompt(context)
+    systemPrompt += '\n\n---\n\n' + pyramidContext
     if (memories) {
       systemPrompt += '\n\n---\n\n## Recent Memory\n\n' + memories
     }
 
     const prompt = `Generate my morning dashboard briefing. Include:
 
-1. **Priority Focus** — What's the #1 thing I should focus on today based on recent context
-2. **Active Projects** — Quick status on anything in-flight from recent conversations
-3. **Reminders** — Any commitments, deadlines, or follow-ups from recent memory
-4. **Energy Check** — Based on what you know about my schedule and patterns, suggest how to structure the day
+1. **Domain Goals** — Quick check: are we making progress toward each domain goal?
+2. **Priority Focus** — Based on active project North Stars, what's the #1 thing I should focus on today?
+3. **Active Projects** — For each active project, how close are we to the North Star? Any guardrail violations?
+4. **Reminders** — Any commitments, deadlines, or follow-ups from recent memory
+5. **Agent Activity** — Any tasks completed by agents overnight?
 
 Keep it concise and actionable. Use bullet points. This should take 2 minutes to read.`
 

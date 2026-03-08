@@ -9,6 +9,9 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 // Re-export shared task execution utilities for cloud tasks
 export { buildTaskPrompt, selectBestTask, recordTaskResult } from '../runtime/task-executor.js'
 
+import type { Task } from '../types/tasks.js'
+export type { Task }
+
 let _client: SupabaseClient | null = null
 
 export function getSupabaseClient(): SupabaseClient {
@@ -194,6 +197,94 @@ export async function callModel(
 
   const json = await response.json() as { choices: { message: { content: string } }[] }
   return json.choices[0]?.message?.content ?? ''
+}
+
+/**
+ * Load domain goals from Supabase for pyramid context.
+ */
+export async function getCloudDomainGoals(
+  client: SupabaseClient,
+): Promise<{ domain: string; statement: string }[]> {
+  const { data } = await client
+    .from('domain_goals')
+    .select('domain, statement')
+    .order('domain')
+
+  return data ?? []
+}
+
+/**
+ * Load active projects with North Stars from Supabase.
+ */
+export async function getCloudProjects(
+  client: SupabaseClient,
+  domain?: string,
+): Promise<{ name: string; domain: string; north_star: string | null; guardrails: string[]; status: string }[]> {
+  let query = client
+    .from('projects')
+    .select('name, domain, north_star, guardrails, status')
+    .in('status', ['active', 'planning'])
+    .order('priority')
+
+  if (domain) query = query.eq('domain', domain)
+
+  const { data } = await query
+  return (data ?? []).map(p => ({
+    ...p,
+    guardrails: Array.isArray(p.guardrails) ? p.guardrails : [],
+  }))
+}
+
+/**
+ * Load todo tasks from Supabase, optionally filtered by assignment.
+ */
+export async function getCloudTasks(
+  client: SupabaseClient,
+  opts?: { status?: string; assignee?: string; limit?: number },
+): Promise<Task[]> {
+  let query = client
+    .from('tasks')
+    .select('*')
+    .order('priority')
+    .limit(opts?.limit ?? 10)
+
+  if (opts?.status) query = query.eq('status', opts.status)
+  if (opts?.assignee) query = query.eq('assignee', opts.assignee)
+
+  const { data } = await query
+  return (data ?? []) as Task[]
+}
+
+/**
+ * Build a pyramid context string for cloud prompts.
+ * Includes domain goals, active projects with North Stars, and guardrails.
+ */
+export async function buildPyramidContext(client: SupabaseClient): Promise<string> {
+  const [goals, projects] = await Promise.all([
+    getCloudDomainGoals(client),
+    getCloudProjects(client),
+  ])
+
+  const sections: string[] = ['## Planning Pyramid']
+
+  if (goals.length > 0) {
+    sections.push('### Domain Goals')
+    for (const g of goals) {
+      sections.push(`- **${g.domain}**: ${g.statement}`)
+    }
+  }
+
+  if (projects.length > 0) {
+    sections.push('\n### Active Projects')
+    for (const p of projects) {
+      let line = `- **${p.name}** (${p.domain}) [${p.status}]`
+      if (p.north_star) line += `\n  North Star: ${p.north_star}`
+      if (p.guardrails.length > 0) line += `\n  Guardrails: ${p.guardrails.join('; ')}`
+      sections.push(line)
+    }
+  }
+
+  return sections.join('\n')
 }
 
 /**
