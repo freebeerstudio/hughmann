@@ -33,13 +33,11 @@ export interface CalendarEvent {
 }
 
 /**
- * Get the path to the Swift calendar helper script.
- * Works from both src/ (dev) and dist/ (built).
+ * Get the path to the compiled Swift calendar helper binary.
+ * Built during `npm run build` via swiftc.
  */
-function getSwiftScriptPath(): string {
-  // In dist/, the script is at dist/calendar/calendar-events.swift
-  // In src/, it's at src/calendar/calendar-events.swift
-  return join(__dirname, 'calendar-events.swift')
+function getCalendarBinaryPath(): string {
+  return join(__dirname, 'calendar-events')
 }
 
 /**
@@ -84,11 +82,11 @@ export function parseCalendarOutput(raw: string): CalendarEvent[] {
  */
 export async function getTomorrowEvents(): Promise<CalendarEvent[]> {
   const calName = process.env.CALENDAR_NAME ?? 'Calendar'
-  const scriptPath = getSwiftScriptPath()
+  const binaryPath = getCalendarBinaryPath()
 
   try {
-    const { stdout } = await execFileAsync('swift', [scriptPath, calName], {
-      timeout: 30_000,
+    const { stdout } = await execFileAsync(binaryPath, [calName], {
+      timeout: 15_000,
     })
     return parseCalendarOutput(stdout.trim())
   } catch (err) {

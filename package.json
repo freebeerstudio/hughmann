@@ -17,7 +17,7 @@
     "dev": "tsx src/cli.ts",
     "chat": "tsx src/cli.ts chat",
     "setup": "tsx src/cli.ts setup",
-    "build": "tsc && rm -rf dist/skills && cp -r src/skills dist/skills && cp src/calendar/calendar-events.swift dist/calendar/",
+    "build": "tsc && rm -rf dist/skills && cp -r src/skills dist/skills && cp src/calendar/calendar-events.swift dist/calendar/ && swiftc -O src/calendar/calendar-events.swift -o dist/calendar/calendar-events",
     "start": "node dist/cli.js",
     "test": "vitest run",
     "test:watch": "vitest",
