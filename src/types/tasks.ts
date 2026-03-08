@@ -21,6 +21,10 @@ export interface Task {
   updated_at: string
   completed_at: string | null
   completion_notes: string | null
+  assignee: string | null
+  assigned_agent_id: string | null
+  blocked_reason: string | null
+  sprint: string | null
 }
 
 export interface TaskFilters {
@@ -42,6 +46,10 @@ export interface CreateTaskInput {
   priority?: number
   due_date?: string
   cwd?: string
+  assignee?: string
+  assigned_agent_id?: string
+  blocked_reason?: string
+  sprint?: string
 }
 
 export interface UpdateTaskInput {
@@ -55,4 +63,8 @@ export interface UpdateTaskInput {
   priority?: number
   due_date?: string
   cwd?: string
+  assignee?: string
+  assigned_agent_id?: string
+  blocked_reason?: string
+  sprint?: string
 }

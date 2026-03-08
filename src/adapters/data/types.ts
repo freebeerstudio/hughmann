@@ -1,5 +1,5 @@
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
 
 /**
  * Common interface for data adapters (Supabase, SQLite, Turso, etc.)
@@ -166,6 +166,12 @@ export interface DataAdapter {
   savePlanningSession(record: Omit<PlanningSessionRecord, 'id' | 'created_at'>): Promise<string>
   getRecentPlanningSessions(limit?: number): Promise<PlanningSessionRecord[]>
   getLatestPlanningSession(): Promise<PlanningSessionRecord | null>
+
+  // ─── Domain Goals ──────────────────────────────────────────────────────
+
+  listDomainGoals(domain?: string): Promise<DomainGoal[]>
+  getDomainGoal(id: string): Promise<DomainGoal | null>
+  updateDomainGoal(id: string, statement: string): Promise<DomainGoal | null>
 
   // ─── Feedback ─────────────────────────────────────────────────────────
 

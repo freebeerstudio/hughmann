@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { randomUUID } from 'node:crypto'
 import type { DataAdapter } from './types.js'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, Milestone } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, Milestone, DomainGoal } from '../../types/projects.js'
 
 export interface SupabaseConfig {
   url: string
@@ -468,6 +468,10 @@ export class SupabaseAdapter implements DataAdapter {
       updated_at: now,
       completed_at: null,
       completion_notes: null,
+      assignee: input.assignee ?? null,
+      assigned_agent_id: input.assigned_agent_id ?? null,
+      blocked_reason: input.blocked_reason ?? null,
+      sprint: input.sprint ?? null,
     }
 
     await this.client.from('tasks').insert(task)
@@ -569,6 +573,12 @@ export class SupabaseAdapter implements DataAdapter {
       quarterly_goal: input.quarterly_goal ?? null,
       milestones,
       priority: input.priority ?? 3,
+      north_star: input.north_star ?? null,
+      guardrails: input.guardrails ?? [],
+      domain_goal_id: null,
+      infrastructure: input.infrastructure ?? {},
+      refinement_cadence: input.refinement_cadence ?? 'weekly',
+      last_refinement_at: null,
       created_at: now,
       updated_at: now,
       completed_at: null,
@@ -614,6 +624,50 @@ export class SupabaseAdapter implements DataAdapter {
       .single()
 
     return data ? parseProject(data) : null
+  }
+
+  // ─── Domain Goals ──────────────────────────────────────────────────────
+
+  async listDomainGoals(domain?: string): Promise<DomainGoal[]> {
+    if (!this.ready) return []
+
+    let query = this.client
+      .from('domain_goals')
+      .select('*')
+      .order('updated_at', { ascending: false })
+
+    if (domain) {
+      query = query.eq('domain', domain)
+    }
+
+    const { data } = await query
+    return (data ?? []) as DomainGoal[]
+  }
+
+  async getDomainGoal(id: string): Promise<DomainGoal | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('domain_goals')
+      .select('*')
+      .eq('id', id)
+      .single()
+
+    return (data as DomainGoal) ?? null
+  }
+
+  async updateDomainGoal(id: string, statement: string): Promise<DomainGoal | null> {
+    if (!this.ready) return null
+
+    const now = new Date().toISOString()
+    const { data } = await this.client
+      .from('domain_goals')
+      .update({ statement, reviewed_at: now, updated_at: now })
+      .eq('id', id)
+      .select('*')
+      .single()
+
+    return (data as DomainGoal) ?? null
   }
 
   // ─── Planning Sessions ─────────────────────────────────────────────────────
@@ -707,6 +761,12 @@ function parseProject(row: Record<string, unknown>): Project {
     quarterly_goal: row.quarterly_goal != null ? String(row.quarterly_goal) : null,
     milestones: Array.isArray(row.milestones) ? row.milestones as Milestone[] : [],
     priority: Number(row.priority),
+    north_star: row.north_star != null ? String(row.north_star) : null,
+    guardrails: Array.isArray(row.guardrails) ? row.guardrails as string[] : [],
+    domain_goal_id: row.domain_goal_id != null ? String(row.domain_goal_id) : null,
+    infrastructure: (row.infrastructure && typeof row.infrastructure === 'object') ? row.infrastructure as Project['infrastructure'] : {},
+    refinement_cadence: (row.refinement_cadence as Project['refinement_cadence']) ?? 'weekly',
+    last_refinement_at: row.last_refinement_at != null ? String(row.last_refinement_at) : null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     completed_at: row.completed_at != null ? String(row.completed_at) : null,
@@ -863,7 +923,7 @@ CREATE TABLE IF NOT EXISTS projects (
   slug TEXT NOT NULL UNIQUE,
   description TEXT,
   domain TEXT,
-  status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'paused', 'completed', 'archived')),
+  status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'paused', 'completed', 'archived', 'incubator')),
   goals JSONB NOT NULL DEFAULT '[]',
   quarterly_goal TEXT,
   milestones JSONB NOT NULL DEFAULT '[]',
@@ -901,6 +961,59 @@ DO $$ BEGIN
     CREATE INDEX idx_tasks_project_id ON tasks (project_id);
   END IF;
 END $$;
+
+-- Add agent assignment fields to tasks
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'assignee') THEN
+    ALTER TABLE tasks ADD COLUMN assignee TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'assigned_agent_id') THEN
+    ALTER TABLE tasks ADD COLUMN assigned_agent_id TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'blocked_reason') THEN
+    ALTER TABLE tasks ADD COLUMN blocked_reason TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'sprint') THEN
+    ALTER TABLE tasks ADD COLUMN sprint TEXT;
+  END IF;
+END $$;
+
+-- Add north star / guardrails fields to projects
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'north_star') THEN
+    ALTER TABLE projects ADD COLUMN north_star TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'guardrails') THEN
+    ALTER TABLE projects ADD COLUMN guardrails JSONB NOT NULL DEFAULT '[]';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'domain_goal_id') THEN
+    ALTER TABLE projects ADD COLUMN domain_goal_id UUID;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'infrastructure') THEN
+    ALTER TABLE projects ADD COLUMN infrastructure JSONB NOT NULL DEFAULT '{}';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'refinement_cadence') THEN
+    ALTER TABLE projects ADD COLUMN refinement_cadence TEXT NOT NULL DEFAULT 'weekly';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'last_refinement_at') THEN
+    ALTER TABLE projects ADD COLUMN last_refinement_at TIMESTAMPTZ;
+  END IF;
+END $$;
+
+-- Domain goals table
+CREATE TABLE IF NOT EXISTS domain_goals (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL,
+  customer_id UUID,
+  statement TEXT NOT NULL,
+  reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_domain_goals_domain ON domain_goals (domain);
+
+ALTER TABLE domain_goals ENABLE ROW LEVEL SECURITY;
 
 -- Domain-to-customer mapping function
 CREATE OR REPLACE FUNCTION hughmann_customer_id(p_domain TEXT)
@@ -999,6 +1112,9 @@ DO $$ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'planning_sessions' AND policyname = 'Allow all for service key') THEN
     CREATE POLICY "Allow all for service key" ON planning_sessions FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'domain_goals' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON domain_goals FOR ALL USING (true);
   END IF;
 END $$;
 `

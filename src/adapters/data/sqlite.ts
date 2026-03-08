@@ -6,7 +6,7 @@ import type { DataAdapter } from './types.js'
 import { cosineSimilarity } from '../../util/math.js'
 import * as sqliteVec from 'sqlite-vec'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, Milestone, ProjectStatus } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, Milestone, ProjectStatus, DomainGoal } from '../../types/projects.js'
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -72,6 +72,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
   due_date TEXT,
   cwd TEXT,
+  assignee TEXT,
+  assigned_agent_id TEXT,
+  blocked_reason TEXT,
+  sprint TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at TEXT,
@@ -88,11 +92,17 @@ CREATE TABLE IF NOT EXISTS projects (
   slug TEXT NOT NULL UNIQUE,
   description TEXT,
   domain TEXT,
-  status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'paused', 'completed', 'archived')),
+  status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'paused', 'completed', 'archived', 'incubator')),
   goals TEXT NOT NULL DEFAULT '[]',
   quarterly_goal TEXT,
   milestones TEXT NOT NULL DEFAULT '[]',
   priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
+  north_star TEXT,
+  guardrails TEXT NOT NULL DEFAULT '[]',
+  domain_goal_id TEXT,
+  infrastructure TEXT NOT NULL DEFAULT '{}',
+  refinement_cadence TEXT DEFAULT 'weekly' CHECK (refinement_cadence IN ('weekly', 'biweekly', 'monthly')),
+  last_refinement_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at TEXT,
@@ -671,15 +681,20 @@ export class SQLiteAdapter implements DataAdapter {
       updated_at: now,
       completed_at: null,
       completion_notes: null,
+      assignee: input.assignee ?? null,
+      assigned_agent_id: input.assigned_agent_id ?? null,
+      blocked_reason: input.blocked_reason ?? null,
+      sprint: input.sprint ?? null,
     }
 
     this.db.prepare(`
-      INSERT INTO tasks (id, title, description, status, task_type, domain, project, priority, due_date, cwd, created_at, updated_at, completed_at, completion_notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, title, description, status, task_type, domain, project, priority, due_date, cwd, created_at, updated_at, completed_at, completion_notes, assignee, assigned_agent_id, blocked_reason, sprint)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       task.id, task.title, task.description, task.status, task.task_type,
       task.domain, task.project, task.priority, task.due_date, task.cwd,
       task.created_at, task.updated_at, task.completed_at, task.completion_notes,
+      task.assignee, task.assigned_agent_id, task.blocked_reason, task.sprint,
     )
 
     return task
@@ -722,7 +737,15 @@ export class SQLiteAdapter implements DataAdapter {
     if (!this.ready) return null
 
     const row = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as (Task & Record<string, unknown>) | undefined
-    return row ? { ...row, project_id: (row.project_id as string | null) ?? null } : null
+    if (!row) return null
+    return {
+      ...row,
+      project_id: (row.project_id as string | null) ?? null,
+      assignee: (row.assignee as string | null) ?? null,
+      assigned_agent_id: (row.assigned_agent_id as string | null) ?? null,
+      blocked_reason: (row.blocked_reason as string | null) ?? null,
+      sprint: (row.sprint as string | null) ?? null,
+    }
   }
 
   // ─── Projects ──────────────────────────────────────────────────────────────
@@ -780,6 +803,12 @@ export class SQLiteAdapter implements DataAdapter {
       quarterly_goal: input.quarterly_goal ?? null,
       milestones,
       priority: input.priority ?? 3,
+      north_star: input.north_star ?? null,
+      guardrails: input.guardrails ?? [],
+      domain_goal_id: null,
+      infrastructure: input.infrastructure ?? {},
+      refinement_cadence: input.refinement_cadence ?? 'weekly',
+      last_refinement_at: null,
       created_at: now,
       updated_at: now,
       completed_at: null,
@@ -787,12 +816,14 @@ export class SQLiteAdapter implements DataAdapter {
     }
 
     this.db.prepare(`
-      INSERT INTO projects (id, name, slug, description, domain, status, goals, quarterly_goal, milestones, priority, created_at, updated_at, completed_at, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO projects (id, name, slug, description, domain, status, goals, quarterly_goal, milestones, priority, north_star, guardrails, infrastructure, refinement_cadence, created_at, updated_at, completed_at, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       project.id, project.name, project.slug, project.description, project.domain,
       project.status, JSON.stringify(project.goals), project.quarterly_goal,
       JSON.stringify(project.milestones), project.priority,
+      project.north_star, JSON.stringify(project.guardrails),
+      JSON.stringify(project.infrastructure), project.refinement_cadence,
       project.created_at, project.updated_at, project.completed_at,
       JSON.stringify(project.metadata),
     )
@@ -807,7 +838,7 @@ export class SQLiteAdapter implements DataAdapter {
     const params: unknown[] = []
 
     for (const [key, value] of Object.entries(input)) {
-      if (['goals', 'milestones', 'metadata'].includes(key)) {
+      if (['goals', 'milestones', 'metadata', 'guardrails', 'infrastructure'].includes(key)) {
         sets.push(`${key} = ?`)
         params.push(JSON.stringify(value))
       } else {
@@ -839,6 +870,12 @@ export class SQLiteAdapter implements DataAdapter {
     const row = this.db.prepare('SELECT * FROM projects WHERE slug = ?').get(slug) as Record<string, unknown> | undefined
     return row ? parseSqliteProject(row) : null
   }
+
+  // ─── Domain Goals ──────────────────────────────────────────────────────
+
+  async listDomainGoals(_domain?: string): Promise<DomainGoal[]> { return [] }
+  async getDomainGoal(_id: string): Promise<DomainGoal | null> { return null }
+  async updateDomainGoal(_id: string, _statement: string): Promise<DomainGoal | null> { return null }
 
   // ─── Planning Sessions ─────────────────────────────────────────────────────
 
@@ -959,6 +996,12 @@ function parseSqliteProject(row: Record<string, unknown>): Project {
     quarterly_goal: row.quarterly_goal != null ? String(row.quarterly_goal) : null,
     milestones: JSON.parse(String(row.milestones ?? '[]')),
     priority: Number(row.priority),
+    north_star: row.north_star != null ? String(row.north_star) : null,
+    guardrails: JSON.parse(String(row.guardrails ?? '[]')),
+    domain_goal_id: row.domain_goal_id != null ? String(row.domain_goal_id) : null,
+    infrastructure: JSON.parse(String(row.infrastructure ?? '{}')),
+    refinement_cadence: (row.refinement_cadence as Project['refinement_cadence']) ?? 'weekly',
+    last_refinement_at: row.last_refinement_at != null ? String(row.last_refinement_at) : null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     completed_at: row.completed_at != null ? String(row.completed_at) : null,
