@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto'
 import type { DataAdapter } from './types.js'
 import { cosineSimilarity } from '../../util/math.js'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, Milestone, ProjectStatus, DomainGoal } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, ProjectStatus, DomainGoal } from '../../types/projects.js'
+import type { Advisor } from '../../types/advisors.js'
 
 /**
  * Schema SQL for Turso (identical to SQLite).
@@ -33,25 +34,6 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_memories_date ON memories (memory_date DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_memories_domain ON memories (domain)`,
 
-  `CREATE TABLE IF NOT EXISTS decisions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    decision TEXT NOT NULL,
-    reasoning TEXT,
-    domain TEXT NOT NULL DEFAULT 'General',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_decisions_domain ON decisions (domain)`,
-  `CREATE INDEX IF NOT EXISTS idx_decisions_created ON decisions (created_at DESC)`,
-
-  `CREATE TABLE IF NOT EXISTS domain_notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain TEXT NOT NULL,
-    content TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_domain_notes_domain ON domain_notes (domain)`,
-
   `CREATE TABLE IF NOT EXISTS memory_embeddings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     memory_id INTEGER,
@@ -67,16 +49,20 @@ const SCHEMA_STATEMENTS = [
     title TEXT NOT NULL,
     description TEXT,
     status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('backlog', 'todo', 'in_progress', 'done', 'blocked')),
-    task_type TEXT NOT NULL DEFAULT 'STANDARD' CHECK (task_type IN ('MUST', 'MIT', 'BIG_ROCK', 'STANDARD')),
+    task_type TEXT NOT NULL DEFAULT 'standard' CHECK (task_type IN ('must', 'mit', 'big_rock', 'standard')),
     domain TEXT,
-    project TEXT,
+    project_id TEXT,
+    sprint TEXT,
     priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
+    assignee TEXT,
+    assigned_agent_id TEXT,
+    blocked_reason TEXT,
     due_date TEXT,
     cwd TEXT,
+    completion_notes TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    completed_at TEXT,
-    completion_notes TEXT
+    completed_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status)`,
   `CREATE INDEX IF NOT EXISTS idx_tasks_domain ON tasks (domain)`,
@@ -88,16 +74,17 @@ const SCHEMA_STATEMENTS = [
     name TEXT NOT NULL,
     slug TEXT NOT NULL UNIQUE,
     description TEXT,
-    domain TEXT,
-    status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'paused', 'completed', 'archived')),
-    goals TEXT NOT NULL DEFAULT '[]',
-    quarterly_goal TEXT,
-    milestones TEXT NOT NULL DEFAULT '[]',
+    domain TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'planning' CHECK (status IN ('planning', 'incubator', 'active', 'paused', 'completed', 'archived')),
     priority INTEGER NOT NULL DEFAULT 3 CHECK (priority >= 0 AND priority <= 5),
+    domain_goal_id TEXT,
+    north_star TEXT,
+    guardrails TEXT NOT NULL DEFAULT '[]',
+    infrastructure TEXT NOT NULL DEFAULT '{}',
+    refinement_cadence TEXT DEFAULT 'weekly' CHECK (refinement_cadence IN ('weekly', 'biweekly', 'monthly')),
+    last_refinement_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    completed_at TEXT,
-    metadata TEXT NOT NULL DEFAULT '{}'
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_projects_domain ON projects (domain)`,
   `CREATE INDEX IF NOT EXISTS idx_projects_status ON projects (status)`,
@@ -116,6 +103,28 @@ const SCHEMA_STATEMENTS = [
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_planning_sessions_created ON planning_sessions (created_at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS briefings (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL CHECK (type IN ('morning', 'closeout', 'weekly_review', 'custom')),
+    domain TEXT,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_briefings_type ON briefings (type)`,
+  `CREATE INDEX IF NOT EXISTS idx_briefings_created ON briefings (created_at DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS advisors (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    role TEXT,
+    expertise TEXT NOT NULL DEFAULT '[]',
+    system_prompt TEXT NOT NULL,
+    avatar_url TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_advisors_name ON advisors (name)`,
 ]
 
 export interface TursoConfig {
@@ -145,10 +154,10 @@ export class TursoAdapter implements DataAdapter {
 
       // Verify tables
       const result = await this.client.execute({
-        sql: `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sessions','memories','decisions','domain_notes')`,
+        sql: `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sessions','memories','tasks','projects','briefings','advisors')`,
         args: [],
       })
-      if (result.rows.length < 4) {
+      if (result.rows.length < 6) {
         return { success: false, error: 'Failed to create all tables' }
       }
       this.ready = true
@@ -304,88 +313,6 @@ export class TursoAdapter implements DataAdapter {
     }))
   }
 
-  // ─── Decisions ─────────────────────────────────────────────────────────
-
-  async logDecision(entry: {
-    decision: string
-    reasoning: string
-    domain: string
-  }): Promise<void> {
-    if (!this.ready) return
-
-    await this.client.execute({
-      sql: `INSERT INTO decisions (decision, reasoning, domain)
-            VALUES (?, ?, ?)`,
-      args: [entry.decision, entry.reasoning, entry.domain],
-    })
-  }
-
-  async getDecisions(domain?: string, limit = 20): Promise<{
-    decision: string
-    reasoning: string
-    domain: string
-    created_at: string
-  }[]> {
-    if (!this.ready) return []
-
-    const result = domain
-      ? await this.client.execute({
-          sql: `SELECT decision, reasoning, domain, created_at
-                FROM decisions WHERE domain = ?
-                ORDER BY created_at DESC LIMIT ?`,
-          args: [domain, limit],
-        })
-      : await this.client.execute({
-          sql: `SELECT decision, reasoning, domain, created_at
-                FROM decisions ORDER BY created_at DESC LIMIT ?`,
-          args: [limit],
-        })
-
-    return result.rows.map(row => ({
-      decision: String(row.decision),
-      reasoning: String(row.reasoning),
-      domain: String(row.domain),
-      created_at: String(row.created_at),
-    }))
-  }
-
-  // ─── Domain Notes ──────────────────────────────────────────────────────
-
-  async addDomainNote(entry: {
-    domain: string
-    content: string
-    source: string
-  }): Promise<void> {
-    if (!this.ready) return
-
-    await this.client.execute({
-      sql: `INSERT INTO domain_notes (domain, content, source)
-            VALUES (?, ?, ?)`,
-      args: [entry.domain, entry.content, entry.source],
-    })
-  }
-
-  async getDomainNotes(domain: string, limit = 50): Promise<{
-    content: string
-    source: string
-    created_at: string
-  }[]> {
-    if (!this.ready) return []
-
-    const result = await this.client.execute({
-      sql: `SELECT content, source, created_at
-            FROM domain_notes WHERE domain = ?
-            ORDER BY created_at DESC LIMIT ?`,
-      args: [domain, limit],
-    })
-
-    return result.rows.map(row => ({
-      content: String(row.content),
-      source: String(row.source),
-      created_at: String(row.created_at),
-    }))
-  }
-
   // ─── Vector Memory ─────────────────────────────────────────────────────
   //
   // Turso (libSQL) doesn't have native vector operations, so we store embeddings
@@ -514,9 +441,13 @@ export class TursoAdapter implements DataAdapter {
       conditions.push('domain = ?')
       params.push(filters.domain)
     }
-    if (filters?.project) {
-      conditions.push('project = ?')
-      params.push(filters.project)
+    if (filters?.project_id) {
+      conditions.push('project_id = ?')
+      params.push(filters.project_id)
+    }
+    if (filters?.assignee) {
+      conditions.push('assignee = ?')
+      params.push(filters.assignee)
     }
     if (filters?.task_type) {
       if (Array.isArray(filters.task_type)) {
@@ -536,27 +467,7 @@ export class TursoAdapter implements DataAdapter {
       args: params as (string | number | null)[],
     })
 
-    return result.rows.map(row => ({
-      id: String(row.id),
-      title: String(row.title),
-      description: row.description != null ? String(row.description) : null,
-      status: String(row.status) as Task['status'],
-      task_type: String(row.task_type) as Task['task_type'],
-      domain: row.domain != null ? String(row.domain) : null,
-      project: row.project != null ? String(row.project) : null,
-      project_id: row.project_id != null ? String(row.project_id) : null,
-      priority: Number(row.priority),
-      due_date: row.due_date != null ? String(row.due_date) : null,
-      cwd: row.cwd != null ? String(row.cwd) : null,
-      created_at: String(row.created_at),
-      updated_at: String(row.updated_at),
-      completed_at: row.completed_at != null ? String(row.completed_at) : null,
-      completion_notes: row.completion_notes != null ? String(row.completion_notes) : null,
-      assignee: row.assignee != null ? String(row.assignee) : null,
-      assigned_agent_id: row.assigned_agent_id != null ? String(row.assigned_agent_id) : null,
-      blocked_reason: row.blocked_reason != null ? String(row.blocked_reason) : null,
-      sprint: row.sprint != null ? String(row.sprint) : null,
-    }))
+    return result.rows.map(parseTursoTask)
   }
 
   async createTask(input: CreateTaskInput): Promise<Task> {
@@ -566,31 +477,31 @@ export class TursoAdapter implements DataAdapter {
       title: input.title,
       description: input.description ?? null,
       status: input.status ?? 'todo',
-      task_type: input.task_type ?? 'STANDARD',
+      task_type: input.task_type ?? 'standard',
       domain: input.domain ?? null,
-      project: input.project ?? null,
       project_id: input.project_id ?? null,
+      sprint: input.sprint ?? null,
       priority: input.priority ?? 3,
-      due_date: input.due_date ?? null,
-      cwd: input.cwd ?? null,
-      created_at: now,
-      updated_at: now,
-      completed_at: null,
-      completion_notes: null,
       assignee: input.assignee ?? null,
       assigned_agent_id: input.assigned_agent_id ?? null,
       blocked_reason: input.blocked_reason ?? null,
-      sprint: input.sprint ?? null,
+      due_date: input.due_date ?? null,
+      cwd: input.cwd ?? null,
+      completion_notes: null,
+      created_at: now,
+      updated_at: now,
+      completed_at: null,
     }
 
     await this.client.execute({
-      sql: `INSERT INTO tasks (id, title, description, status, task_type, domain, project, priority, due_date, cwd, created_at, updated_at, completed_at, completion_notes, assignee, assigned_agent_id, blocked_reason, sprint)
+      sql: `INSERT INTO tasks (id, title, description, status, task_type, domain, project_id, sprint, priority, assignee, assigned_agent_id, blocked_reason, due_date, cwd, completion_notes, created_at, updated_at, completed_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         task.id, task.title, task.description, task.status, task.task_type,
-        task.domain, task.project, task.priority, task.due_date, task.cwd,
-        task.created_at, task.updated_at, task.completed_at, task.completion_notes,
-        task.assignee, task.assigned_agent_id, task.blocked_reason, task.sprint,
+        task.domain, task.project_id, task.sprint, task.priority,
+        task.assignee, task.assigned_agent_id, task.blocked_reason,
+        task.due_date, task.cwd, task.completion_notes,
+        task.created_at, task.updated_at, task.completed_at,
       ],
     })
 
@@ -643,29 +554,7 @@ export class TursoAdapter implements DataAdapter {
     })
 
     if (result.rows.length === 0) return null
-    const row = result.rows[0]
-
-    return {
-      id: String(row.id),
-      title: String(row.title),
-      description: row.description != null ? String(row.description) : null,
-      status: String(row.status) as Task['status'],
-      task_type: String(row.task_type) as Task['task_type'],
-      domain: row.domain != null ? String(row.domain) : null,
-      project: row.project != null ? String(row.project) : null,
-      project_id: row.project_id != null ? String(row.project_id) : null,
-      priority: Number(row.priority),
-      due_date: row.due_date != null ? String(row.due_date) : null,
-      cwd: row.cwd != null ? String(row.cwd) : null,
-      created_at: String(row.created_at),
-      updated_at: String(row.updated_at),
-      completed_at: row.completed_at != null ? String(row.completed_at) : null,
-      completion_notes: row.completion_notes != null ? String(row.completion_notes) : null,
-      assignee: row.assignee != null ? String(row.assignee) : null,
-      assigned_agent_id: row.assigned_agent_id != null ? String(row.assigned_agent_id) : null,
-      blocked_reason: row.blocked_reason != null ? String(row.blocked_reason) : null,
-      sprint: row.sprint != null ? String(row.sprint) : null,
-    }
+    return parseTursoTask(result.rows[0])
   }
 
   // ─── Projects ──────────────────────────────────────────────────────────────
@@ -704,48 +593,34 @@ export class TursoAdapter implements DataAdapter {
   async createProject(input: CreateProjectInput): Promise<Project> {
     const now = new Date().toISOString()
     const slug = input.slug ?? input.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-    const milestones: Milestone[] = (input.milestones ?? []).map(m => ({
-      id: randomUUID(),
-      title: m.title,
-      target_date: m.target_date ?? null,
-      completed: false,
-      completed_at: null,
-    }))
 
     const project: Project = {
       id: randomUUID(),
       name: input.name,
       slug,
       description: input.description ?? null,
-      domain: input.domain ?? null,
+      domain: input.domain,
       status: input.status ?? 'planning',
-      goals: input.goals ?? [],
-      quarterly_goal: input.quarterly_goal ?? null,
-      milestones,
       priority: input.priority ?? 3,
+      domain_goal_id: input.domain_goal_id ?? null,
       north_star: input.north_star ?? null,
       guardrails: input.guardrails ?? [],
-      domain_goal_id: null,
       infrastructure: input.infrastructure ?? {},
       refinement_cadence: input.refinement_cadence ?? 'weekly',
       last_refinement_at: null,
       created_at: now,
       updated_at: now,
-      completed_at: null,
-      metadata: input.metadata ?? {},
     }
 
     await this.client.execute({
-      sql: `INSERT INTO projects (id, name, slug, description, domain, status, goals, quarterly_goal, milestones, priority, north_star, guardrails, infrastructure, refinement_cadence, created_at, updated_at, completed_at, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO projects (id, name, slug, description, domain, status, priority, domain_goal_id, north_star, guardrails, infrastructure, refinement_cadence, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         project.id, project.name, project.slug, project.description, project.domain,
-        project.status, JSON.stringify(project.goals), project.quarterly_goal,
-        JSON.stringify(project.milestones), project.priority,
+        project.status, project.priority, project.domain_goal_id,
         project.north_star, JSON.stringify(project.guardrails),
         JSON.stringify(project.infrastructure), project.refinement_cadence,
-        project.created_at, project.updated_at, project.completed_at,
-        JSON.stringify(project.metadata),
+        project.created_at, project.updated_at,
       ],
     })
 
@@ -759,7 +634,7 @@ export class TursoAdapter implements DataAdapter {
     const params: unknown[] = []
 
     for (const [key, value] of Object.entries(input)) {
-      if (['goals', 'milestones', 'metadata', 'guardrails', 'infrastructure'].includes(key)) {
+      if (['guardrails', 'infrastructure'].includes(key)) {
         sets.push(`${key} = ?`)
         params.push(JSON.stringify(value))
       } else {
@@ -821,13 +696,13 @@ export class TursoAdapter implements DataAdapter {
       sql: `INSERT INTO planning_sessions (id, session_id, focus_area, topics_covered, decisions_made, tasks_created, projects_touched, open_questions, next_steps)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
-        id, record.session_id, record.focus_area,
+        id, record.session_id ?? '', record.focus_area,
         JSON.stringify(record.topics_covered),
         JSON.stringify(record.decisions_made),
-        JSON.stringify(record.tasks_created),
-        JSON.stringify(record.projects_touched),
-        JSON.stringify(record.open_questions),
-        JSON.stringify(record.next_steps),
+        JSON.stringify(record.tasks_created ?? []),
+        JSON.stringify(record.projects_touched ?? []),
+        JSON.stringify(record.open_questions ?? []),
+        JSON.stringify(record.next_steps ?? []),
       ],
     })
 
@@ -855,6 +730,118 @@ export class TursoAdapter implements DataAdapter {
 
     if (result.rows.length === 0) return null
     return parseTursoPlanningSession(result.rows[0])
+  }
+
+  // ─── Briefings ────────────────────────────────────────────────────────────
+
+  async saveBriefing(type: 'morning' | 'closeout' | 'weekly_review' | 'custom', content: string, domain?: string): Promise<string> {
+    const id = randomUUID()
+
+    await this.client.execute({
+      sql: `INSERT INTO briefings (id, type, domain, content) VALUES (?, ?, ?, ?)`,
+      args: [id, type, domain ?? null, content],
+    })
+
+    return id
+  }
+
+  async getLatestBriefing(type?: string): Promise<{
+    id: string
+    type: string
+    domain: string | null
+    content: string
+    created_at: string
+  } | null> {
+    if (!this.ready) return null
+
+    const result = type
+      ? await this.client.execute({
+          sql: 'SELECT * FROM briefings WHERE type = ? ORDER BY created_at DESC LIMIT 1',
+          args: [type],
+        })
+      : await this.client.execute({
+          sql: 'SELECT * FROM briefings ORDER BY created_at DESC LIMIT 1',
+          args: [],
+        })
+
+    if (result.rows.length === 0) return null
+    const row = result.rows[0]
+    return {
+      id: String(row.id),
+      type: String(row.type),
+      domain: row.domain != null ? String(row.domain) : null,
+      content: String(row.content),
+      created_at: String(row.created_at),
+    }
+  }
+
+  async listBriefings(limit = 10, type?: string): Promise<{
+    id: string
+    type: string
+    domain: string | null
+    content: string
+    created_at: string
+  }[]> {
+    if (!this.ready) return []
+
+    const result = type
+      ? await this.client.execute({
+          sql: 'SELECT * FROM briefings WHERE type = ? ORDER BY created_at DESC LIMIT ?',
+          args: [type, limit],
+        })
+      : await this.client.execute({
+          sql: 'SELECT * FROM briefings ORDER BY created_at DESC LIMIT ?',
+          args: [limit],
+        })
+
+    return result.rows.map(row => ({
+      id: String(row.id),
+      type: String(row.type),
+      domain: row.domain != null ? String(row.domain) : null,
+      content: String(row.content),
+      created_at: String(row.created_at),
+    }))
+  }
+
+  // ─── Advisors ─────────────────────────────────────────────────────────────
+
+  async listAdvisors(expertise?: string): Promise<Advisor[]> {
+    if (!this.ready) return []
+
+    const result = await this.client.execute({
+      sql: 'SELECT * FROM advisors ORDER BY name ASC',
+      args: [],
+    })
+
+    let advisors = result.rows.map(parseTursoAdvisor)
+    if (expertise) {
+      advisors = advisors.filter(a => a.expertise.some(e => e.toLowerCase().includes(expertise.toLowerCase())))
+    }
+    return advisors
+  }
+
+  async getAdvisor(id: string): Promise<Advisor | null> {
+    if (!this.ready) return null
+
+    const result = await this.client.execute({
+      sql: 'SELECT * FROM advisors WHERE id = ?',
+      args: [id],
+    })
+
+    if (result.rows.length === 0) return null
+    return parseTursoAdvisor(result.rows[0])
+  }
+
+  async getAdvisorByName(name: string): Promise<Advisor | null> {
+    if (!this.ready) return null
+
+    const result = await this.client.execute({
+      sql: 'SELECT * FROM advisors WHERE name = ?',
+      args: [name],
+    })
+
+    if (result.rows.length === 0) return null
+    return parseTursoAdvisor(result.rows[0])
   }
 
   // ─── Feedback ───────────────────────────────────────────────────────────
@@ -907,28 +894,59 @@ export class TursoAdapter implements DataAdapter {
   }
 }
 
+function parseTursoTask(row: Record<string, unknown>): Task {
+  return {
+    id: String(row.id),
+    title: String(row.title),
+    description: row.description != null ? String(row.description) : null,
+    status: String(row.status) as Task['status'],
+    task_type: String(row.task_type) as Task['task_type'],
+    domain: row.domain != null ? String(row.domain) : null,
+    project_id: row.project_id != null ? String(row.project_id) : null,
+    sprint: row.sprint != null ? String(row.sprint) : null,
+    priority: Number(row.priority),
+    assignee: row.assignee != null ? String(row.assignee) : null,
+    assigned_agent_id: row.assigned_agent_id != null ? String(row.assigned_agent_id) : null,
+    blocked_reason: row.blocked_reason != null ? String(row.blocked_reason) : null,
+    due_date: row.due_date != null ? String(row.due_date) : null,
+    cwd: row.cwd != null ? String(row.cwd) : null,
+    completion_notes: row.completion_notes != null ? String(row.completion_notes) : null,
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+    completed_at: row.completed_at != null ? String(row.completed_at) : null,
+  }
+}
+
 function parseTursoProject(row: Record<string, unknown>): Project {
   return {
     id: String(row.id),
     name: String(row.name),
     slug: String(row.slug),
     description: row.description != null ? String(row.description) : null,
-    domain: row.domain != null ? String(row.domain) : null,
+    domain: String(row.domain),
     status: String(row.status) as ProjectStatus,
-    goals: JSON.parse(String(row.goals ?? '[]')),
-    quarterly_goal: row.quarterly_goal != null ? String(row.quarterly_goal) : null,
-    milestones: JSON.parse(String(row.milestones ?? '[]')),
     priority: Number(row.priority),
+    domain_goal_id: row.domain_goal_id != null ? String(row.domain_goal_id) : null,
     north_star: row.north_star != null ? String(row.north_star) : null,
     guardrails: JSON.parse(String(row.guardrails ?? '[]')),
-    domain_goal_id: row.domain_goal_id != null ? String(row.domain_goal_id) : null,
     infrastructure: JSON.parse(String(row.infrastructure ?? '{}')),
     refinement_cadence: (row.refinement_cadence as Project['refinement_cadence']) ?? 'weekly',
     last_refinement_at: row.last_refinement_at != null ? String(row.last_refinement_at) : null,
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
-    completed_at: row.completed_at != null ? String(row.completed_at) : null,
-    metadata: JSON.parse(String(row.metadata ?? '{}')),
+  }
+}
+
+function parseTursoAdvisor(row: Record<string, unknown>): Advisor {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    display_name: String(row.display_name),
+    role: row.role != null ? String(row.role) : null,
+    expertise: JSON.parse(String(row.expertise ?? '[]')),
+    system_prompt: String(row.system_prompt),
+    avatar_url: row.avatar_url != null ? String(row.avatar_url) : null,
+    created_at: String(row.created_at),
   }
 }
 
