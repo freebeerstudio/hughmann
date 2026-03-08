@@ -190,20 +190,25 @@ export const contentRadar = schedules.task({
       `${i + 1}. "${a.title}" (${a.source})\n   ${a.summary.slice(0, 200)}`
     ).join('\n\n')
 
-    const scoringPrompt = `You are a content relevance scorer for a web design/development studio (Free Beer Studio) that also covers AI, automation, and small business technology.
+    const scoringPrompt = `You are a content curator for Free Beer Studio, a web design/development studio that writes about AI, automation, small business technology, content marketing, and web development.
 
-Given these topics and articles, identify which articles are relevant to which topics.
+Your job is to find articles that could inspire blog posts, LinkedIn posts, or newsletter content. Be generous — if an article could be spun into useful content for small business owners or tech-savvy entrepreneurs, include it.
 
-## Topics
+## Our Topics
 ${topicList}
 
-## Articles
+## Articles to Score
 ${articleList}
 
-For each relevant match (relevance >= 0.6), output a JSON array:
-[{ "article_index": 1, "topic_name": "Topic Name", "relevance": 0.8, "angle": "Brief suggested angle for content" }]
+Score each article's relevance to each topic (0.0 to 1.0). Include any match scoring 0.4 or above.
 
-Only include matches with relevance >= 0.6. If no matches, return [].
+For each match, suggest a content angle — how would Free Beer Studio write about this for their audience of small business owners and entrepreneurs?
+
+Output a JSON array:
+[{ "article_index": 1, "topic_name": "Topic Name", "relevance": 0.7, "angle": "How small businesses can use this to..." }]
+
+Be generous with matching — we'd rather review and reject than miss good ideas. Aim for 10-20 matches from this batch.
+
 Return ONLY the JSON array, no other text.`
 
     let matches: { article_index: number; topic_name: string; relevance: number; angle: string }[] = []
