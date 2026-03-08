@@ -1,21 +1,25 @@
 /**
- * apple-calendar.ts — Read events from Apple Calendar via icalBuddy.
+ * apple-calendar.ts — Read events from Apple Calendar via EventKit.
  *
- * Uses icalBuddy CLI to query Calendar.app events efficiently.
- * Previous approaches (AppleScript, JXA) failed or were too slow —
- * AppleScript can't handle Calendar.app's `event` keyword conflict,
- * and JXA's `whose` filter hangs on calendars with large event history.
+ * Runs a Swift script that uses EventKit (Apple's official calendar API)
+ * to query tomorrow's events. Previous approaches failed:
+ *   - AppleScript: `event` keyword conflict with Calendar.app
+ *   - JXA: `whose` filter hangs on large event histories
+ *   - icalBuddy: too old for modern macOS permissions
  *
- * icalBuddy reads from the calendar store directly and is fast.
- * Install: `brew install ical-buddy`
+ * The Swift script handles permission prompts, outputs JSON, and is fast.
  *
  * Returns structured event data for the prep-meetings skill.
  */
 
 import { execFile } from 'node:child_process'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export interface CalendarEvent {
   title: string
@@ -29,98 +33,68 @@ export interface CalendarEvent {
 }
 
 /**
- * Build icalBuddy args to query tomorrow's events.
- * Configurable via env var:
- *   CALENDAR_NAME — calendar name filter (default: "Calendar")
+ * Get the path to the Swift calendar helper script.
+ * Works from both src/ (dev) and dist/ (built).
  */
-export function buildIcalBuddyArgs(): string[] {
-  const calName = process.env.CALENDAR_NAME ?? 'Calendar'
-
-  return [
-    // Formatting
-    '-nc',          // no calendar names in section headers
-    '-nrd',         // no relative date descriptions
-    '-b', '',       // no bullet prefix
-    '-iep', 'title,datetime,location,attendees,notes',  // include these properties
-    '-po', 'title,datetime,location,attendees,notes',   // property order
-    '-ps', '| |',   // property separator (pipe with spaces)
-    '-df', '%Y-%m-%d',  // date format
-    '-tf', '%I:%M %p',  // time format (12-hour with AM/PM)
-    '-ic', calName,     // include only this calendar
-    '-ea',              // exclude all-day events
-    'eventsFrom:tomorrow', 'to:tomorrow',
-  ]
+function getSwiftScriptPath(): string {
+  // In dist/, the script is at dist/calendar/calendar-events.swift
+  // In src/, it's at src/calendar/calendar-events.swift
+  return join(__dirname, 'calendar-events.swift')
 }
 
 /**
- * Parse icalBuddy output into structured events.
- * Each event is a single line with pipe-separated fields:
- *   title | datetime | location | attendees | notes
+ * Parse JSON output from the Swift script into structured events.
+ * Skips all-day events (holidays, OOO, etc.)
  */
 export function parseCalendarOutput(raw: string): CalendarEvent[] {
   if (!raw.trim()) return []
 
-  const calName = process.env.CALENDAR_NAME ?? 'Calendar'
-  const events: CalendarEvent[] = []
+  try {
+    const parsed = JSON.parse(raw) as Array<{
+      title?: string
+      startTime?: string
+      endTime?: string
+      location?: string
+      attendees?: string[]
+      notes?: string
+      calendarName?: string
+      isAllDay?: boolean
+    }>
 
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
-
-    const parts = line.split(' | ')
-    if (parts.length < 2) continue
-
-    const title = (parts[0] ?? '').trim()
-    const datetime = (parts[1] ?? '').trim()
-    const location = (parts[2] ?? '').trim()
-    const attendeeStr = (parts[3] ?? '').trim()
-    const notes = parts.slice(4).join(' | ').trim() // notes might contain pipes
-
-    // Parse datetime: "2026-03-08 at 09:00 AM - 10:00 AM" or "2026-03-08 at 09:00 AM - 2026-03-08 at 10:00 AM"
-    let startTime = ''
-    let endTime = ''
-    const timeMatch = datetime.match(/(\d{1,2}:\d{2}\s*[AP]M)\s*-\s*(?:\d{4}-\d{2}-\d{2}\s+at\s+)?(\d{1,2}:\d{2}\s*[AP]M)/)
-    if (timeMatch) {
-      startTime = timeMatch[1]
-      endTime = timeMatch[2]
-    }
-
-    const attendees = attendeeStr
-      ? attendeeStr.split(',').map(a => a.trim()).filter(Boolean)
-      : []
-
-    events.push({
-      title,
-      startTime,
-      endTime,
-      location,
-      attendees,
-      notes,
-      calendarName: calName,
-      isAllDay: false, // -ea flag already excludes all-day events
-    })
+    return parsed
+      .filter(e => !e.isAllDay)
+      .map(e => ({
+        title: e.title ?? '',
+        startTime: e.startTime ?? '',
+        endTime: e.endTime ?? '',
+        location: e.location ?? '',
+        attendees: e.attendees ?? [],
+        notes: e.notes ?? '',
+        calendarName: e.calendarName ?? (process.env.CALENDAR_NAME ?? 'Calendar'),
+        isAllDay: e.isAllDay ?? false,
+      }))
+  } catch {
+    return []
   }
-
-  return events
 }
 
 /**
- * Fetch tomorrow's events from Apple Calendar via icalBuddy.
- * Requires icalBuddy to be installed: `brew install ical-buddy`
+ * Fetch tomorrow's events from Apple Calendar via EventKit.
+ * On first run, macOS will prompt for Calendar access — click Allow.
  */
 export async function getTomorrowEvents(): Promise<CalendarEvent[]> {
-  const args = buildIcalBuddyArgs()
+  const calName = process.env.CALENDAR_NAME ?? 'Calendar'
+  const scriptPath = getSwiftScriptPath()
+
   try {
-    const { stdout } = await execFileAsync('icalBuddy', args, {
-      timeout: 15_000,
+    const { stdout } = await execFileAsync('swift', [scriptPath, calName], {
+      timeout: 30_000,
     })
     return parseCalendarOutput(stdout.trim())
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (msg.includes('ENOENT')) {
-      throw new Error('icalBuddy not found. Install with: brew install ical-buddy')
-    }
-    if (msg.includes('No calendars')) {
-      return [] // No matching calendar — return empty
+    if (msg.includes('Calendar access denied')) {
+      throw new Error('Calendar access denied. Grant access in System Settings > Privacy & Security > Calendars.')
     }
     throw err
   }
