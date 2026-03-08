@@ -41,11 +41,22 @@ export interface DaemonTask {
   createdAt: string
 }
 
-interface ScheduleRule {
+export interface ScheduleRule {
   skillId: string
-  hour: number
-  minute: number
-  weekday?: number // 0=Sun, 1=Mon, ... 6=Sat
+  /** Fixed time: hour (0-23) */
+  hour?: number
+  /** Fixed time: minute (0-59) */
+  minute?: number
+  /** Fixed time: day of week, 0=Sun, 1=Mon, ... 6=Sat */
+  weekday?: number
+  /** Cron expression (5-field: min hour dom mon dow) — alternative to hour/minute/weekday */
+  cron?: string
+  /** Interval string like "6h", "30m", "2h30m" — alternative to cron/hour/minute */
+  interval?: string
+  /** Optional domain context to activate before running */
+  domain?: string
+  /** Whether this rule is active (default: true) */
+  enabled?: boolean
 }
 
 export async function startDaemon(): Promise<void> {
@@ -76,10 +87,11 @@ export async function startDaemon(): Promise<void> {
   await runtime.initSession()
   log(`Daemon started (PID: ${process.pid})`)
 
-  // Recover orphaned tasks from a previous crash
+  // Recover orphaned tasks from a previous crash (only tasks this agent owns)
   if (runtime.data) {
     try {
-      const orphaned = await runtime.data.listTasks({ status: ['in_progress'], limit: 50 })
+      const agentName = runtime.context.config.systemName?.toLowerCase() ?? 'hugh'
+      const orphaned = await runtime.data.listTasks({ status: ['in_progress'], assigneeOrUnassigned: agentName, limit: 50 })
       if (orphaned.length > 0) {
         for (const task of orphaned) {
           await runtime.data.updateTask(task.id, { status: 'todo' })
@@ -269,6 +281,72 @@ export function enqueueTask(task: DaemonTask): void {
 
 // ─── Internal ──────────────────────────────────────────────────────────────
 
+/** Parse an interval string like "6h", "30m", "2h30m" into milliseconds */
+export function parseInterval(interval: string): number | null {
+  const match = interval.match(/^(?:(\d+)h)?(?:(\d+)m)?$/)
+  if (!match || (!match[1] && !match[2])) return null
+  const hours = parseInt(match[1] ?? '0')
+  const minutes = parseInt(match[2] ?? '0')
+  return (hours * 60 + minutes) * 60 * 1000
+}
+
+/** Check if a cron expression matches the given date (5-field: min hour dom mon dow) */
+export function cronMatches(cron: string, date: Date): boolean {
+  const parts = cron.trim().split(/\s+/)
+  if (parts.length !== 5) return false
+
+  const fields = [
+    date.getMinutes(),   // min
+    date.getHours(),     // hour
+    date.getDate(),      // day of month
+    date.getMonth() + 1, // month (1-12)
+    date.getDay(),       // day of week (0=Sun)
+  ]
+
+  for (let i = 0; i < 5; i++) {
+    if (!cronFieldMatches(parts[i], fields[i], i)) return false
+  }
+  return true
+}
+
+function cronFieldMatches(field: string, value: number, _fieldIndex: number): boolean {
+  if (field === '*') return true
+
+  // Handle comma-separated values: "1,3,5"
+  if (field.includes(',')) {
+    return field.split(',').some(part => cronFieldMatches(part.trim(), value, _fieldIndex))
+  }
+
+  // Handle step values: "*/5" or "1-10/2"
+  if (field.includes('/')) {
+    const [range, stepStr] = field.split('/')
+    const step = parseInt(stepStr)
+    if (isNaN(step) || step <= 0) return false
+    if (range === '*') return value % step === 0
+    // range like "1-10/2"
+    const [minStr, maxStr] = range.split('-')
+    const min = parseInt(minStr)
+    const max = parseInt(maxStr)
+    if (isNaN(min) || isNaN(max)) return false
+    return value >= min && value <= max && (value - min) % step === 0
+  }
+
+  // Handle ranges: "1-5"
+  if (field.includes('-')) {
+    const [minStr, maxStr] = field.split('-')
+    const min = parseInt(minStr)
+    const max = parseInt(maxStr)
+    if (isNaN(min) || isNaN(max)) return false
+    return value >= min && value <= max
+  }
+
+  // Plain number
+  return parseInt(field) === value
+}
+
+// Track last execution time for interval-based rules
+const intervalLastRun = new Map<string, number>()
+
 async function checkSchedule(
   runtime: Runtime,
   schedule: ScheduleRule[],
@@ -280,27 +358,59 @@ async function checkSchedule(
   const currentDay = now.getDay() // 0=Sun
 
   for (const rule of schedule) {
+    // Skip disabled rules
+    if (rule.enabled === false) continue
+
     const key = `${rule.skillId}-${now.toISOString().split('T')[0]}`
+    let shouldRun = false
 
-    // Skip if already executed today
-    if (executedToday.has(key)) continue
+    if (rule.interval) {
+      // Interval-based scheduling
+      const intervalMs = parseInterval(rule.interval)
+      if (!intervalMs) continue
+      const lastRun = intervalLastRun.get(rule.skillId) ?? 0
+      if (Date.now() - lastRun >= intervalMs) {
+        shouldRun = true
+      }
+    } else if (rule.cron) {
+      // Cron-based scheduling
+      if (executedToday.has(key)) continue
+      shouldRun = cronMatches(rule.cron, now)
+    } else if (rule.hour !== undefined) {
+      // Legacy hour/minute scheduling
+      if (executedToday.has(key)) continue
+      if (rule.hour !== currentHour) continue
+      const ruleMinute = rule.minute ?? 0
+      if (Math.abs(ruleMinute - currentMinute) > 1) continue
+      if (rule.weekday !== undefined && rule.weekday !== currentDay) continue
+      shouldRun = true
+    }
 
-    // Check time match (within the poll window)
-    if (rule.hour !== currentHour) continue
-    if (Math.abs(rule.minute - currentMinute) > 1) continue
-
-    // Check day match
-    if (rule.weekday !== undefined && rule.weekday !== currentDay) continue
+    if (!shouldRun) continue
 
     // Execute the skill
     log(`Executing scheduled skill: ${rule.skillId}`)
     executedToday.add(key)
+    if (rule.interval) {
+      intervalLastRun.set(rule.skillId, Date.now())
+    }
+
+    // Switch domain if specified
+    const prevDomain = runtime.activeDomain
+    if (rule.domain) {
+      try { runtime.setDomain(rule.domain) } catch { /* proceed */ }
+    }
 
     try {
       await executeSkill(runtime, rule.skillId)
       log(`Completed: ${rule.skillId}`)
     } catch (err) {
       log(`Failed: ${rule.skillId} — ${err instanceof Error ? err.message : String(err)}`)
+    }
+
+    // Restore domain
+    if (rule.domain && prevDomain !== runtime.activeDomain) {
+      runtime.setDomain(prevDomain)
     }
   }
 }
@@ -423,20 +533,27 @@ async function executeSkill(runtime: Runtime, skillId: string): Promise<void> {
   }
 }
 
-function loadSchedule(): ScheduleRule[] {
-  const path = join(DAEMON_DIR, 'schedule.json')
-  if (!existsSync(path)) {
+export const SCHEDULE_FILE = join(DAEMON_DIR, 'schedule.json')
+
+export function loadSchedule(): ScheduleRule[] {
+  if (!existsSync(SCHEDULE_FILE)) {
     // Derive defaults from config's active hours if available
     const defaults = deriveDefaultSchedule()
-    writeFileSync(path, JSON.stringify(defaults, null, 2), 'utf-8')
+    mkdirSync(DAEMON_DIR, { recursive: true })
+    writeFileSync(SCHEDULE_FILE, JSON.stringify(defaults, null, 2), 'utf-8')
     return defaults
   }
 
   try {
-    return JSON.parse(readFileSync(path, 'utf-8'))
+    return JSON.parse(readFileSync(SCHEDULE_FILE, 'utf-8'))
   } catch {
     return []
   }
+}
+
+export function saveSchedule(rules: ScheduleRule[]): void {
+  mkdirSync(DAEMON_DIR, { recursive: true })
+  writeFileSync(SCHEDULE_FILE, JSON.stringify(rules, null, 2), 'utf-8')
 }
 
 /** Parse active hours string like "7am-6pm" into { start, end } in 24h format */
@@ -575,8 +692,11 @@ async function processTaskQueue(
   const check = canExecuteTask(stats, config)
   if (!check.allowed) return // Silently skip — not an error, just not time yet
 
-  // Get next available task
-  const tasks = await runtime.data.listTasks({ status: 'todo', limit: 10 })
+  // Determine this agent's name for task routing
+  const agentName = runtime.context?.config.systemName?.toLowerCase() ?? 'hugh'
+
+  // Get next available task — only tasks assigned to this agent or unassigned
+  const tasks = await runtime.data.listTasks({ status: 'todo', assigneeOrUnassigned: agentName, limit: 10 })
   const task = selectBestTask(tasks)
   if (!task) return
 

@@ -170,6 +170,16 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_content_status ON content (status)`,
   `CREATE INDEX IF NOT EXISTS idx_content_domain ON content (domain)`,
   `CREATE INDEX IF NOT EXISTS idx_content_topic ON content (topic_id)`,
+
+  `CREATE TABLE IF NOT EXISTS domain_goals (
+    id TEXT PRIMARY KEY,
+    domain TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    reviewed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_domain_goals_domain ON domain_goals (domain)`,
 ]
 
 export interface TursoConfig {
@@ -494,6 +504,10 @@ export class TursoAdapter implements DataAdapter {
       conditions.push('assignee = ?')
       params.push(filters.assignee)
     }
+    if (filters?.assigneeOrUnassigned) {
+      conditions.push('(assignee = ? OR assignee IS NULL)')
+      params.push(filters.assigneeOrUnassigned)
+    }
     if (filters?.task_type) {
       if (Array.isArray(filters.task_type)) {
         conditions.push(`task_type IN (${filters.task_type.map(() => '?').join(',')})`)
@@ -728,9 +742,60 @@ export class TursoAdapter implements DataAdapter {
 
   // ─── Domain Goals ──────────────────────────────────────────────────────
 
-  async listDomainGoals(_domain?: string): Promise<DomainGoal[]> { return [] }
-  async getDomainGoal(_id: string): Promise<DomainGoal | null> { return null }
-  async updateDomainGoal(_id: string, _statement: string): Promise<DomainGoal | null> { return null }
+  async listDomainGoals(domain?: string): Promise<DomainGoal[]> {
+    if (!this.ready) return []
+
+    const result = domain
+      ? await this.client.execute({
+          sql: 'SELECT * FROM domain_goals WHERE domain = ? ORDER BY domain',
+          args: [domain],
+        })
+      : await this.client.execute({
+          sql: 'SELECT * FROM domain_goals ORDER BY domain',
+          args: [],
+        })
+
+    return result.rows.map(row => ({
+      id: String(row.id),
+      domain: String(row.domain),
+      statement: String(row.statement),
+      reviewed_at: String(row.reviewed_at),
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at),
+    }))
+  }
+
+  async getDomainGoal(id: string): Promise<DomainGoal | null> {
+    if (!this.ready) return null
+
+    const result = await this.client.execute({
+      sql: 'SELECT * FROM domain_goals WHERE id = ?',
+      args: [id],
+    })
+
+    if (result.rows.length === 0) return null
+    const row = result.rows[0]
+    return {
+      id: String(row.id),
+      domain: String(row.domain),
+      statement: String(row.statement),
+      reviewed_at: String(row.reviewed_at),
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at),
+    }
+  }
+
+  async updateDomainGoal(id: string, statement: string): Promise<DomainGoal | null> {
+    if (!this.ready) return null
+
+    const now = new Date().toISOString()
+    await this.client.execute({
+      sql: 'UPDATE domain_goals SET statement = ?, reviewed_at = ?, updated_at = ? WHERE id = ?',
+      args: [statement, now, now, id],
+    })
+
+    return this.getDomainGoal(id)
+  }
 
   // ─── Planning Sessions ─────────────────────────────────────────────────────
 

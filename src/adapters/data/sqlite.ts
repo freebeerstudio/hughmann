@@ -208,6 +208,16 @@ CREATE TABLE IF NOT EXISTS content (
 CREATE INDEX IF NOT EXISTS idx_content_status ON content (status);
 CREATE INDEX IF NOT EXISTS idx_content_domain ON content (domain);
 CREATE INDEX IF NOT EXISTS idx_content_topic ON content (topic_id);
+
+CREATE TABLE IF NOT EXISTS domain_goals (
+  id TEXT PRIMARY KEY,
+  domain TEXT NOT NULL,
+  statement TEXT NOT NULL,
+  reviewed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_domain_goals_domain ON domain_goals (domain);
 `
 
 /**
@@ -620,6 +630,10 @@ export class SQLiteAdapter implements DataAdapter {
       conditions.push('assignee = ?')
       params.push(filters.assignee)
     }
+    if (filters?.assigneeOrUnassigned) {
+      conditions.push('(assignee = ? OR assignee IS NULL)')
+      params.push(filters.assigneeOrUnassigned)
+    }
     if (filters?.task_type) {
       if (Array.isArray(filters.task_type)) {
         conditions.push(`task_type IN (${filters.task_type.map(() => '?').join(',')})`)
@@ -834,9 +848,25 @@ export class SQLiteAdapter implements DataAdapter {
 
   // ─── Domain Goals ──────────────────────────────────────────────────────
 
-  async listDomainGoals(_domain?: string): Promise<DomainGoal[]> { return [] }
-  async getDomainGoal(_id: string): Promise<DomainGoal | null> { return null }
-  async updateDomainGoal(_id: string, _statement: string): Promise<DomainGoal | null> { return null }
+  async listDomainGoals(domain?: string): Promise<DomainGoal[]> {
+    if (domain) {
+      const rows = this.db.prepare('SELECT * FROM domain_goals WHERE domain = ? ORDER BY domain').all(domain) as DomainGoal[]
+      return rows
+    }
+    const rows = this.db.prepare('SELECT * FROM domain_goals ORDER BY domain').all() as DomainGoal[]
+    return rows
+  }
+
+  async getDomainGoal(id: string): Promise<DomainGoal | null> {
+    const row = this.db.prepare('SELECT * FROM domain_goals WHERE id = ?').get(id) as DomainGoal | undefined
+    return row ?? null
+  }
+
+  async updateDomainGoal(id: string, statement: string): Promise<DomainGoal | null> {
+    const now = new Date().toISOString()
+    this.db.prepare('UPDATE domain_goals SET statement = ?, reviewed_at = ?, updated_at = ? WHERE id = ?').run(statement, now, now, id)
+    return this.getDomainGoal(id)
+  }
 
   // ─── Planning Sessions ─────────────────────────────────────────────────────
 

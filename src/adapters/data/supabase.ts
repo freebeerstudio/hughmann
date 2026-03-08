@@ -360,6 +360,9 @@ export class SupabaseAdapter implements DataAdapter {
     if (filters?.assignee) {
       query = query.eq('assignee', filters.assignee)
     }
+    if (filters?.assigneeOrUnassigned) {
+      query = query.or(`assignee.eq.${filters.assigneeOrUnassigned},assignee.is.null`)
+    }
     if (filters?.task_type) {
       if (Array.isArray(filters.task_type)) {
         query = query.in('task_type', filters.task_type)

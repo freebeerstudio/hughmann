@@ -33,6 +33,8 @@ export interface TaskFilters {
   project_id?: string
   task_type?: TaskType | TaskType[]
   assignee?: string
+  /** Match tasks assigned to this agent OR unassigned (assignee IS NULL). Used by daemon task routing. */
+  assigneeOrUnassigned?: string
   limit?: number
 }
 

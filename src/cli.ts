@@ -653,94 +653,165 @@ async function manageDaemon(flags: CliFlags) {
 }
 
 /**
- * `hughmann schedule [install|list|remove]` — Manage scheduled skills via launchd
+ * `hughmann schedule [list|add|remove]` — Manage daemon schedule.json
  */
 async function manageSchedule(flags: CliFlags) {
-  const { installSchedule, removeSchedule, removeAllSchedules, listSchedules, DEFAULT_SCHEDULES } = await import('./scheduler/launchd.js')
+  const { loadSchedule, saveSchedule, parseInterval, cronMatches } = await import('./daemon/index.js')
 
   const subcommand = flags.args[0] ?? 'list'
-  const WEEKDAYS = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+  const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
   switch (subcommand) {
-    case 'install': {
-      const skillId = flags.args[1]
-
-      if (skillId) {
-        // Install a specific skill schedule
-        const defaults = DEFAULT_SCHEDULES.find(d => d.skillId === skillId)
-        if (!defaults) {
-          console.error(`  ${pc.red('No default schedule for')} ${skillId}`)
-          console.error(`  ${pc.dim('Available: ' + DEFAULT_SCHEDULES.map(d => d.skillId).join(', '))}`)
-          process.exit(1)
-        }
-        const result = installSchedule(defaults.skillId, defaults.hour, defaults.minute, defaults.weekday)
-        if (result.success) {
-          console.log(`  ${pc.green('\u2713')} Installed: ${defaults.description}`)
-          console.log(`  ${pc.dim(result.path)}`)
-        } else {
-          console.error(`  ${pc.red('\u2717')} Failed: ${result.error}`)
-        }
-      } else {
-        // Install all default schedules
-        console.log()
-        for (const sched of DEFAULT_SCHEDULES) {
-          const result = installSchedule(sched.skillId, sched.hour, sched.minute, sched.weekday)
-          if (result.success) {
-            console.log(`  ${pc.green('\u2713')} ${sched.description}`)
-          } else {
-            console.log(`  ${pc.red('\u2717')} ${sched.skillId}: ${result.error}`)
-          }
-        }
-        console.log()
-        console.log(`  ${pc.dim('Logs: ~/.hughmann/logs/')}`)
-        console.log(`  ${pc.dim('Manage: hughmann schedule list | hughmann schedule remove')}`)
-        console.log()
-      }
-      break
-    }
-
     case 'list': {
-      const schedules = listSchedules()
-      if (schedules.length === 0) {
-        console.log(`  ${pc.dim('No schedules installed.')}`)
-        console.log(`  ${pc.dim('Run "hughmann schedule install" to set up defaults.')}`)
+      const rules = loadSchedule()
+      if (rules.length === 0) {
+        console.log(`  ${pc.dim('No scheduled skills.')}`)
+        console.log(`  ${pc.dim('Run "hughmann schedule add <skill-id> --cron \'0 7 * * *\'" to add one.')}`)
         return
       }
       console.log()
-      for (const s of schedules) {
-        const time = `${s.hour.toString().padStart(2, '0')}:${s.minute.toString().padStart(2, '0')}`
-        const day = s.weekday ? ` ${WEEKDAYS[s.weekday]}` : ' daily'
-        const status = s.loaded ? pc.green('active') : pc.yellow('inactive')
-        console.log(`  ${pc.bold(s.skillId)}${' '.repeat(Math.max(1, 14 - s.skillId.length))}${time}${day}  ${status}`)
+      for (const rule of rules) {
+        const enabled = rule.enabled !== false
+        const status = enabled ? pc.green('enabled') : pc.yellow('disabled')
+        const skillLabel = pc.bold(rule.skillId)
+        const pad = ' '.repeat(Math.max(1, 18 - rule.skillId.length))
+
+        let timing: string
+        if (rule.cron) {
+          timing = `cron: ${rule.cron}`
+        } else if (rule.interval) {
+          timing = `every ${rule.interval}`
+        } else if (rule.hour !== undefined) {
+          const time = `${(rule.hour).toString().padStart(2, '0')}:${(rule.minute ?? 0).toString().padStart(2, '0')}`
+          const day = rule.weekday !== undefined ? ` ${WEEKDAYS[rule.weekday]}` : ' daily'
+          timing = `${time}${day}`
+        } else {
+          timing = pc.dim('(no timing)')
+        }
+
+        const domain = rule.domain ? `  ${pc.dim(`[${rule.domain}]`)}` : ''
+        console.log(`  ${skillLabel}${pad}${timing}  ${status}${domain}`)
       }
       console.log()
+      break
+    }
+
+    case 'add': {
+      const skillId = flags.args[1]
+      if (!skillId) {
+        console.error(`  ${pc.red('Usage')}: hughmann schedule add <skill-id> --cron "0 7 * * *"`)
+        console.error(`  ${pc.red('  or')}: hughmann schedule add <skill-id> --interval 6h`)
+        process.exit(1)
+      }
+
+      // Parse --cron, --interval, --domain, --disabled from remaining args
+      let cron: string | undefined
+      let interval: string | undefined
+      let domain: string | undefined
+      let enabled = true
+
+      const rest = flags.args.slice(2)
+      for (let i = 0; i < rest.length; i++) {
+        const arg = rest[i]
+        if (arg === '--cron' && rest[i + 1]) {
+          cron = rest[++i]
+        } else if (arg === '--interval' && rest[i + 1]) {
+          interval = rest[++i]
+        } else if (arg === '--domain' && rest[i + 1]) {
+          domain = rest[++i]
+        } else if (arg === '--disabled') {
+          enabled = false
+        }
+      }
+
+      if (!cron && !interval) {
+        console.error(`  ${pc.red('Must specify --cron or --interval')}`)
+        console.error(`  ${pc.dim('Examples:')}`)
+        console.error(`    ${pc.dim('hughmann schedule add morning --cron "0 7 * * *"')}`)
+        console.error(`    ${pc.dim('hughmann schedule add sync --interval 6h')}`)
+        process.exit(1)
+      }
+
+      // Validate cron expression
+      if (cron) {
+        const parts = cron.trim().split(/\s+/)
+        if (parts.length !== 5) {
+          console.error(`  ${pc.red('Invalid cron expression')} — must have 5 fields: min hour dom mon dow`)
+          console.error(`  ${pc.dim('Example: "0 7 * * *" = 7:00 AM daily')}`)
+          process.exit(1)
+        }
+        // Quick validation: check it can match against a date without error
+        try {
+          cronMatches(cron, new Date())
+        } catch {
+          console.error(`  ${pc.red('Invalid cron expression')}: ${cron}`)
+          process.exit(1)
+        }
+      }
+
+      // Validate interval
+      if (interval) {
+        const ms = parseInterval(interval)
+        if (!ms) {
+          console.error(`  ${pc.red('Invalid interval')} — use format like "6h", "30m", or "2h30m"`)
+          process.exit(1)
+        }
+      }
+
+      const rules = loadSchedule()
+
+      // Check for duplicate
+      const existing = rules.findIndex(r => r.skillId === skillId)
+      if (existing !== -1) {
+        console.log(`  ${pc.yellow('Replacing')} existing schedule for ${skillId}`)
+        rules.splice(existing, 1)
+      }
+
+      const newRule: { skillId: string; cron?: string; interval?: string; domain?: string; enabled: boolean } = { skillId, enabled }
+      if (cron) newRule.cron = cron
+      if (interval) newRule.interval = interval
+      if (domain) newRule.domain = domain
+
+      rules.push(newRule)
+      saveSchedule(rules)
+
+      const timing = cron ? `cron: ${cron}` : `every ${interval}`
+      console.log(`  ${pc.green('\u2713')} Added: ${pc.bold(skillId)} — ${timing}${domain ? ` [${domain}]` : ''}`)
       break
     }
 
     case 'remove': {
       const skillId = flags.args[1]
-      if (skillId === 'all' || !skillId) {
-        const count = removeAllSchedules()
-        console.log(`  ${pc.green('\u2713')} Removed ${count} schedule${count !== 1 ? 's' : ''}`)
-      } else {
-        const removed = removeSchedule(skillId)
-        if (removed) {
-          console.log(`  ${pc.green('\u2713')} Removed schedule for ${skillId}`)
-        } else {
-          console.log(`  ${pc.dim('No schedule found for')} ${skillId}`)
-        }
+      if (!skillId) {
+        console.error(`  ${pc.red('Usage')}: hughmann schedule remove <skill-id>`)
+        process.exit(1)
       }
+
+      const rules = loadSchedule()
+      const idx = rules.findIndex(r => r.skillId === skillId)
+      if (idx === -1) {
+        console.log(`  ${pc.dim('No schedule found for')} ${skillId}`)
+        return
+      }
+
+      rules.splice(idx, 1)
+      saveSchedule(rules)
+      console.log(`  ${pc.green('\u2713')} Removed schedule for ${skillId}`)
       break
     }
 
     default: {
-      console.log(`  ${pc.bold('Usage')}: hughmann schedule [install|list|remove]`)
+      console.log(`  ${pc.bold('Usage')}: hughmann schedule [list|add|remove]`)
       console.log()
-      console.log(`    ${pc.cyan('install')}           Install all default schedules (morning, closeout, review)`)
-      console.log(`    ${pc.cyan('install <skill>')}   Install schedule for a specific skill`)
-      console.log(`    ${pc.cyan('list')}              Show installed schedules`)
-      console.log(`    ${pc.cyan('remove')}            Remove all schedules`)
-      console.log(`    ${pc.cyan('remove <skill>')}    Remove a specific schedule`)
+      console.log(`    ${pc.cyan('list')}                                   Show all scheduled skills`)
+      console.log(`    ${pc.cyan('add <skill> --cron "0 7 * * *"')}         Schedule with cron expression`)
+      console.log(`    ${pc.cyan('add <skill> --interval 6h')}              Schedule at fixed interval`)
+      console.log(`    ${pc.cyan('add <skill> --cron "..." --domain X')}    Schedule with domain context`)
+      console.log(`    ${pc.cyan('add <skill> --cron "..." --disabled')}    Add disabled (won\'t run until enabled)`)
+      console.log(`    ${pc.cyan('remove <skill>')}                         Remove a skill from the schedule`)
+      console.log()
+      console.log(`  ${pc.dim('Cron format: minute hour day-of-month month day-of-week')}`)
+      console.log(`  ${pc.dim('Interval format: "6h", "30m", "2h30m"')}`)
       console.log()
     }
   }
@@ -1294,7 +1365,7 @@ function showUsage() {
   console.log(`    ${pc.cyan('calendar')}          Apple Calendar events ${pc.dim('(tomorrow)')}`)
   console.log(`    ${pc.cyan('vault sync')}        Sync Obsidian vaults to database`)
   console.log(`    ${pc.cyan('trigger')}           Manage Trigger.dev ${pc.dim('(dev|deploy|sync)')}`)
-  console.log(`    ${pc.cyan('schedule')}          Manage scheduled skills ${pc.dim('(launchd)')}`)
+  console.log(`    ${pc.cyan('schedule')}          Manage daemon scheduled skills ${pc.dim('(list|add|remove)')}`)
   console.log(`    ${pc.cyan('migrate')}           Print migration SQL ${pc.dim('(auto-detects Supabase/Turso)')}`)
   console.log(`    ${pc.cyan('migrate --apply')}   Connect and create tables ${pc.dim('(auto-detects engine)')}`)
   console.log(`    ${pc.cyan('telegram')}          Start Telegram bot`)
@@ -1315,6 +1386,6 @@ function showUsage() {
   console.log(`    ${pc.dim('hughmann run review')}             ${pc.dim('# Run weekly review')}`)
   console.log(`    ${pc.dim('hughmann status -q')}              ${pc.dim('# Quick status (quiet mode)')}`)
   console.log(`    ${pc.dim('hughmann chat -d omnissa')}        ${pc.dim('# Chat in Omnissa domain')}`)
-  console.log(`    ${pc.dim('hughmann schedule install')}       ${pc.dim('# Auto-schedule daily routines')}`)
+  console.log(`    ${pc.dim('hughmann schedule add morning --cron "0 7 * * *"')}  ${pc.dim('# Schedule a skill')}`)
   console.log()
 }

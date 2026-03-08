@@ -880,10 +880,35 @@ export function createInternalToolServer(
 
         const piece = await data.updateContent(args.id, updates)
         if (!piece) return errorResult(`Content piece not found: ${args.id}`)
+
+        // Auto-create Mark drafting task when content is approved
+        if (args.status === 'approved' && piece) {
+          const sourceInfo = piece.source_material?.[0]
+          const description = [
+            `Draft content based on: "${piece.title}"`,
+            sourceInfo ? `\nSource: ${sourceInfo.url}` : '',
+            sourceInfo?.summary ? `\nSummary: ${sourceInfo.summary}` : '',
+            args.body ? `\nNotes: ${args.body}` : '',
+          ].filter(Boolean).join('')
+
+          await data.createTask({
+            title: `Draft: ${piece.title.slice(0, 80)}`,
+            description,
+            domain: piece.domain,
+            status: 'todo',
+            task_type: 'standard',
+            priority: 2,
+            assignee: 'mark',
+          }).catch(() => {}) // Best-effort — don't fail the status update
+        }
+
+        const msg = args.status === 'approved'
+          ? `Content "${piece.title}" approved. Drafting task created for Mark.`
+          : `Content ${args.id} updated.`
         return {
           content: [{
             type: 'text' as const,
-            text: `Content updated: "${piece.title}" (status: ${piece.status})`,
+            text: msg,
           }],
         }
       } catch (err) {
