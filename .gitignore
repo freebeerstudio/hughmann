@@ -7,3 +7,4 @@ context/
 *.log
 *.pid
 .DS_Store
+supabase/.temp/

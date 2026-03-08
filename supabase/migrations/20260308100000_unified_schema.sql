@@ -10,6 +10,7 @@ BEGIN;
 -- Phase 1 — Drop old tables (respecting FK order)
 -- ─────────────────────────────────────────────────────────────────────────────
 
+-- Drop HughMann legacy tables
 DROP TABLE IF EXISTS planning_sessions CASCADE;
 DROP TABLE IF EXISTS domain_notes CASCADE;
 DROP TABLE IF EXISTS decisions CASCADE;
@@ -21,6 +22,14 @@ DROP TABLE IF EXISTS projects CASCADE;
 DROP TABLE IF EXISTS domain_goals CASCADE;
 DROP TABLE IF EXISTS context_docs CASCADE;
 DROP FUNCTION IF EXISTS hughmann_customer_id(TEXT);
+
+-- Drop Platform tables being rebuilt in unified schema
+DROP TABLE IF EXISTS advisors CASCADE;
+DROP TABLE IF EXISTS briefings CASCADE;
+DROP TABLE IF EXISTS content_sources CASCADE;
+DROP TABLE IF EXISTS topics CASCADE;
+DROP TABLE IF EXISTS content CASCADE;
+DROP TABLE IF EXISTS customers CASCADE;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Phase 2 — Create 14 new tables
