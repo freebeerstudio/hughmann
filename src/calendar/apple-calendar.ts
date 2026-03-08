@@ -34,15 +34,29 @@ export function buildTomorrowQuery(): string {
 
   return `tell application "Calendar"
   set d to "${d}"
-  set acctName to "${account}"
-  set calName to "${calName}"
+  set targetAcct to "${account}"
+  set targetCal to "${calName}"
   set tomorrow to (current date) + 1 * days
   set tStart to tomorrow
   set time of tStart to 0
   set tEnd to tStart + 1 * days
 
-  set acct to first account whose name is acctName
-  set cal to first calendar of acct whose name is calName
+  -- Find the target calendar by iterating (Calendar.app lacks 'whose' on accounts)
+  set cal to missing value
+  repeat with a in (every account)
+    if name of a is targetAcct then
+      repeat with c in (every calendar of a)
+        if name of c is targetCal then
+          set cal to c
+          exit repeat
+        end if
+      end repeat
+      exit repeat
+    end if
+  end repeat
+
+  if cal is missing value then return ""
+
   set evts to (every event of cal whose start date >= tStart and start date < tEnd)
 
   set outputLines to {}
