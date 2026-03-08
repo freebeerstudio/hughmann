@@ -112,6 +112,9 @@ export function createInternalToolServer(
       priority: z.number().optional().describe('Priority 0-5, lower is higher (default: 3)'),
       due_date: z.string().optional().describe('Due date (ISO 8601 or YYYY-MM-DD)'),
       cwd: z.string().optional().describe('Working directory for file-based tasks'),
+      assignee: z.string().optional().describe('Who is assigned to this task (e.g. "Hugh", "Elle", "Wayne")'),
+      sprint: z.string().optional().describe('Sprint identifier (e.g. "2026-W10", "phase-1")'),
+      blocked_reason: z.string().optional().describe('Why the task is blocked (set status to "blocked" too)'),
     },
     async (args) => {
       try {
@@ -143,6 +146,10 @@ export function createInternalToolServer(
       priority: z.number().optional().describe('New priority 0-5'),
       due_date: z.string().optional().describe('New due date'),
       cwd: z.string().optional().describe('New working directory'),
+      assignee: z.string().optional().describe('Who is assigned to this task'),
+      sprint: z.string().optional().describe('Sprint identifier'),
+      blocked_reason: z.string().optional().describe('Why the task is blocked'),
+      assigned_agent_id: z.string().optional().describe('Agent instance ID for multi-agent assignment'),
     },
     async (args) => {
       try {
@@ -220,10 +227,26 @@ export function createInternalToolServer(
           }
         }
 
+        const formatted = projects.map(p => {
+          const lines = [
+            `### ${p.name} [${p.status}] (${p.domain ?? 'no domain'})`,
+            `  ID: ${p.id} | Slug: ${p.slug} | Priority: ${p.priority} | Cadence: ${p.refinement_cadence}`,
+          ]
+          if (p.north_star) lines.push(`  North Star: ${p.north_star}`)
+          if (p.quarterly_goal) lines.push(`  Quarterly Goal: ${p.quarterly_goal}`)
+          if (p.goals.length > 0) lines.push(`  Goals: ${p.goals.join('; ')}`)
+          if (p.guardrails.length > 0) lines.push(`  Guardrails: ${p.guardrails.join('; ')}`)
+          if (p.milestones.length > 0) {
+            const open = p.milestones.filter(m => !m.completed)
+            lines.push(`  Milestones: ${p.milestones.length} total, ${open.length} open`)
+          }
+          return lines.join('\n')
+        }).join('\n\n')
+
         return {
           content: [{
             type: 'text' as const,
-            text: truncatedJson(projects),
+            text: sanitizeToolOutput(`## Projects (${projects.length})\n\n${formatted}`),
           }],
         }
       } catch (err) {
@@ -248,6 +271,9 @@ export function createInternalToolServer(
         target_date: z.string().optional(),
       })).optional().describe('Project milestones with titles and optional target dates'),
       priority: z.number().optional().describe('Priority 0-5 (default: 3)'),
+      north_star: z.string().optional().describe('The single North Star outcome that defines project success'),
+      guardrails: z.array(z.string()).optional().describe('Guardrail constraints the project must stay within'),
+      refinement_cadence: z.enum(['weekly', 'biweekly', 'monthly']).optional().describe('How often to refine and review this project'),
     },
     async (args) => {
       try {
@@ -290,6 +316,11 @@ export function createInternalToolServer(
         completed_at: z.string().optional(),
       })).optional().describe('Updated milestones array'),
       priority: z.number().optional().describe('New priority 0-5'),
+      north_star: z.string().optional().describe('The single North Star outcome that defines project success'),
+      guardrails: z.array(z.string()).optional().describe('Guardrail constraints the project must stay within'),
+      refinement_cadence: z.enum(['weekly', 'biweekly', 'monthly']).optional().describe('How often to refine and review this project'),
+      domain_goal_id: z.string().optional().describe('UUID of the domain goal this project supports'),
+      last_refinement_at: z.string().optional().describe('ISO timestamp of the last refinement session'),
     },
     async (args) => {
       try {
@@ -320,7 +351,7 @@ export function createInternalToolServer(
 
   const getPlanningContext = tool(
     'get_planning_context',
-    'Assembles a full planning briefing: active projects, open tasks, stale projects, domains with no projects, quarterly gap analysis, open questions from last planning session, and recent decisions. Call this at the start of a /focus planning session.',
+    'Assembles a full planning briefing: active projects, open tasks, stale projects, domains with no projects, domain goals, quarterly gap analysis, open questions from last planning session, and recent decisions. Call this at the start of a /focus planning session.',
     {},
     async () => {
       try {
@@ -336,7 +367,8 @@ export function createInternalToolServer(
           for (const p of allProjects) {
             const taskCount = (await data.listTasks({ project: p.name })).length
             const openMilestones = p.milestones.filter(m => !m.completed)
-            briefing.push(`### ${p.name} [${p.status}] (${p.domain ?? 'no domain'})`)
+            briefing.push(`### ${p.name} [${p.status}] (${p.domain ?? 'no domain'}) — cadence: ${p.refinement_cadence}`)
+            if (p.north_star) briefing.push(`  North Star: ${p.north_star}`)
             if (p.quarterly_goal) briefing.push(`  Quarterly goal: ${p.quarterly_goal}`)
             if (p.goals.length > 0) briefing.push(`  Goals: ${p.goals.join('; ')}`)
             briefing.push(`  Tasks: ${taskCount} | Open milestones: ${openMilestones.length}`)
@@ -426,7 +458,21 @@ export function createInternalToolServer(
           }
         }
 
-        // 6. Self-improvement gaps
+        // 6. Domain goals
+        try {
+          const domainGoals = await data.listDomainGoals()
+          if (domainGoals.length > 0) {
+            briefing.push('')
+            briefing.push(`## Domain Goals (${domainGoals.length})`)
+            for (const g of domainGoals) {
+              briefing.push(`- **${g.domain}**: ${g.statement} (reviewed: ${g.reviewed_at.split('T')[0]})`)
+            }
+          }
+        } catch {
+          // Best-effort — domain goals are optional
+        }
+
+        // 7. Self-improvement gaps
         try {
           const { getGapSummaryForFocus } = await import('../runtime/gap-analyzer.js')
           const gapSummary = await getGapSummaryForFocus(data)
@@ -631,6 +677,60 @@ export function createInternalToolServer(
           }
         }
 
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  // ─── Domain Goal Tools ──────────────────────────────────────────────────────
+
+  const listDomainGoals = tool(
+    'list_domain_goals',
+    'List domain goals. Optionally filter by domain slug. Domain goals define the strategic direction for each domain.',
+    {
+      domain: z.string().optional().describe('Filter by domain slug (omnissa, fbs, personal)'),
+    },
+    async (args) => {
+      try {
+        const goals = await data.listDomainGoals(args.domain)
+        if (goals.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `No domain goals found${args.domain ? ` for domain "${args.domain}"` : ''}.`,
+            }],
+          }
+        }
+        return {
+          content: [{
+            type: 'text' as const,
+            text: truncatedJson(goals),
+          }],
+        }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const updateDomainGoal = tool(
+    'update_domain_goal',
+    'Update the statement of a domain goal. Use this to refine or change the strategic direction for a domain.',
+    {
+      id: z.string().describe('UUID of the domain goal to update'),
+      statement: z.string().describe('The new goal statement'),
+    },
+    async (args) => {
+      try {
+        const goal = await data.updateDomainGoal(args.id, args.statement)
+        if (!goal) return errorResult(`Domain goal not found: ${args.id}`)
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Updated domain goal for "${goal.domain}": ${goal.statement}`,
+          }],
+        }
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err))
       }
@@ -897,6 +997,8 @@ export function createInternalToolServer(
       searchKnowledgeBase, browseKnowledgeBase,
       // MCP management
       listAvailableMcpServers, installMcpServer, uninstallMcpServer,
+      // Domain Goals
+      listDomainGoals, updateDomainGoal,
       // Feedback
       recordFeedback, getFeedbackSummary,
       // Utility
