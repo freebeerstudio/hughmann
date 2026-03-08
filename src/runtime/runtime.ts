@@ -32,8 +32,9 @@ export class Runtime {
   skills: SkillManager
   data?: DataAdapter
   usage?: UsageTracker
+  // Factory that creates a fresh MCP server per query (avoids "Already connected" errors)
   // eslint-disable-next-line @typescript-eslint/consistent-type-imports
-  internalToolServer?: ReturnType<typeof import('../tools/internal-tools.js').createInternalToolServer>
+  internalToolServerFactory?: ReturnType<typeof import('../tools/internal-tools.js').createInternalToolServer>
 
   private contextDir: string
   private turnsSinceDistill = 0
@@ -62,7 +63,7 @@ export class Runtime {
     this.skills = skills ?? new SkillManager(contextDir.replace('/context', ''))
     this.data = data
     this.usage = usage
-    this.internalToolServer = internalToolServer as typeof this.internalToolServer
+    this.internalToolServerFactory = internalToolServer as typeof this.internalToolServerFactory
   }
 
   setDomain(slug: string | null): void {
@@ -136,7 +137,7 @@ export class Runtime {
       maxTurns: 50,
       mcpServers: {
         ...(Object.keys(this.mcpServers).length > 0 ? this.mcpServers : {}),
-        ...(this.internalToolServer ? { hughmann: this.internalToolServer } : {}),
+        ...(this.internalToolServerFactory ? { hughmann: this.internalToolServerFactory() } : {}),
       },
     }
 
@@ -191,7 +192,7 @@ export class Runtime {
       cwd: options?.cwd,
       mcpServers: {
         ...(Object.keys(this.mcpServers).length > 0 ? this.mcpServers : {}),
-        ...(this.internalToolServer ? { hughmann: this.internalToolServer } : {}),
+        ...(this.internalToolServerFactory ? { hughmann: this.internalToolServerFactory() } : {}),
       },
     }
 
@@ -388,7 +389,7 @@ export class Runtime {
       includeMasterPlan: true,
       includeGrowth: false,
       firstBoot: this.firstBoot,
-      hasTools: !!this.internalToolServer,
+      hasTools: !!this.internalToolServerFactory,
     })
 
     // Only use firstBoot for the first message

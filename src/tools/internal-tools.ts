@@ -981,28 +981,33 @@ export function createInternalToolServer(
     }
   )
 
-  return createSdkMcpServer({
+  const toolList = [
+    // Tasks
+    listTasks, createTask, updateTask, completeTask,
+    // Projects
+    listProjects, createProject, updateProject,
+    // Planning
+    getPlanningContext, capturePlanningSummary,
+    // Context
+    updateMasterPlanSection,
+    // Knowledge Base
+    searchKnowledgeBase, browseKnowledgeBase,
+    // MCP management
+    listAvailableMcpServers, installMcpServer, uninstallMcpServer,
+    // Domain Goals
+    listDomainGoals, updateDomainGoal,
+    // Feedback
+    recordFeedback, getFeedbackSummary,
+    // Utility
+    getCurrentTime,
+  ]
+
+  // Return a factory that creates a fresh MCP server per query() call.
+  // The Agent SDK calls connect() on each server, so reusing a single
+  // instance across calls causes "Already connected to a transport" errors.
+  return () => createSdkMcpServer({
     name: 'hughmann',
     version: '0.4.0',
-    tools: [
-      // Tasks
-      listTasks, createTask, updateTask, completeTask,
-      // Projects
-      listProjects, createProject, updateProject,
-      // Planning
-      getPlanningContext, capturePlanningSummary,
-      // Context
-      updateMasterPlanSection,
-      // Knowledge Base
-      searchKnowledgeBase, browseKnowledgeBase,
-      // MCP management
-      listAvailableMcpServers, installMcpServer, uninstallMcpServer,
-      // Domain Goals
-      listDomainGoals, updateDomainGoal,
-      // Feedback
-      recordFeedback, getFeedbackSummary,
-      // Utility
-      getCurrentTime,
-    ],
+    tools: toolList,
   })
 }
