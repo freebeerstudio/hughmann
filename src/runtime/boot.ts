@@ -185,7 +185,7 @@ export async function boot(): Promise<BootResult> {
         description: 'Permanent project for tracking and resolving Hugh\'s capability gaps. Auto-populated from distillation analysis and daemon failures.',
         domain: 'personal',
         status: 'active',
-        goals: ['Identify capability gaps proactively', 'Reduce recurring failures', 'Improve autonomously over time'],
+        guardrails: ['Identify capability gaps proactively', 'Reduce recurring failures', 'Improve autonomously over time'],
       })
     }).catch(() => {}) // Best-effort, never blocks boot
   }

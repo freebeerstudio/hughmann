@@ -69,7 +69,7 @@ export async function analyzeGapsFromDistillation(
   if (gaps.length === 0) return
 
   // Load existing tasks for deduplication
-  const existing = await dataAdapter.listTasks({ project: project.name, status: ['backlog', 'todo', 'in_progress'] })
+  const existing = await dataAdapter.listTasks({ project_id: project.id, status: ['backlog', 'todo', 'in_progress'] })
 
   for (const gap of gaps) {
     if (isDuplicate(gap.title, existing)) continue
@@ -80,9 +80,8 @@ export async function analyzeGapsFromDistillation(
       title: gap.title,
       description: gap.description,
       status: 'backlog',
-      task_type: 'STANDARD',
+      task_type: 'standard',
       domain: 'personal',
-      project: project.name,
       project_id: project.id,
       priority,
     })
@@ -104,7 +103,7 @@ export async function analyzeGapFromFailure(
   const title = `Investigate failure: ${task.title}`
 
   // Prevent recursive loops — don't create failure tasks for failure tasks
-  const existing = await dataAdapter.listTasks({ project: project.name, status: ['backlog', 'todo', 'in_progress'] })
+  const existing = await dataAdapter.listTasks({ project_id: project.id, status: ['backlog', 'todo', 'in_progress'] })
   if (isDuplicate(title, existing)) return
 
   // Check if failure matches a known MCP server capability
@@ -119,9 +118,8 @@ export async function analyzeGapFromFailure(
     title,
     description: `Daemon task "${task.title}" (${task.id}) failed with:\n\n${errorMessage}\n\nInvestigate root cause and determine if Hugh needs a capability improvement.${mcpSuggestion}`,
     status: 'backlog',
-    task_type: 'STANDARD',
+    task_type: 'standard',
     domain: 'personal',
-    project: project.name,
     project_id: project.id,
     priority: 3,
   })
@@ -138,7 +136,7 @@ export async function getGapSummaryForFocus(
   if (!project) return null
 
   const tasks = await dataAdapter.listTasks({
-    project: project.name,
+    project_id: project.id,
     status: ['backlog', 'todo', 'in_progress'],
   })
 

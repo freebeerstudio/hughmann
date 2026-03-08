@@ -520,7 +520,7 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
         const status = t.status === 'in_progress' ? pc.yellow('\u25b6')
           : t.status === 'blocked' ? pc.red('\u2716')
           : pc.green('\u25cb')
-        const type = t.task_type !== 'STANDARD' ? pc.cyan(`[${t.task_type}]`) : ''
+        const type = t.task_type !== 'standard' ? pc.cyan(`[${t.task_type}]`) : ''
         const domain = t.domain ? pc.dim(`(${t.domain})`) : ''
         console.log(`  ${status} ${type} ${t.title} ${domain} ${pc.dim(t.id.slice(0, 8))}`)
       }
@@ -558,10 +558,8 @@ async function handleSlashCommand(input: string, runtime: Runtime): Promise<stri
           const status = p.status === 'active' ? pc.green(`[active]`)
             : p.status === 'planning' ? pc.blue(`[planning]`)
             : pc.yellow(`[${p.status}]`)
-          const goalCount = p.goals.length > 0 ? pc.dim(` (${p.goals.length} goals)`) : ''
-          const milestoneCount = p.milestones.filter(m => !m.completed).length
-          const msText = milestoneCount > 0 ? pc.dim(` ${milestoneCount} milestones`) : ''
-          console.log(`    ${status} ${p.name}${goalCount}${msText} ${pc.dim(p.id.slice(0, 8))}`)
+          const guardrailCount = (p.guardrails?.length ?? 0) > 0 ? pc.dim(` (${p.guardrails!.length} guardrails)`) : ''
+          console.log(`    ${status} ${p.name}${guardrailCount} ${pc.dim(p.id.slice(0, 8))}`)
         }
       }
       console.log()

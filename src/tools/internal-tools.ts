@@ -76,7 +76,7 @@ export function createInternalToolServer(
           filters.status = statuses.length === 1 ? statuses[0] : statuses
         }
         if (args.domain) filters.domain = args.domain
-        if (args.project) filters.project = args.project
+        if (args.project) filters.project_id = args.project
         if (args.task_type) {
           const types = args.task_type.split(',').map(s => s.trim()) as TaskType[]
           filters.task_type = types.length === 1 ? types[0] : types
@@ -233,13 +233,7 @@ export function createInternalToolServer(
             `  ID: ${p.id} | Slug: ${p.slug} | Priority: ${p.priority} | Cadence: ${p.refinement_cadence}`,
           ]
           if (p.north_star) lines.push(`  North Star: ${p.north_star}`)
-          if (p.quarterly_goal) lines.push(`  Quarterly Goal: ${p.quarterly_goal}`)
-          if (p.goals.length > 0) lines.push(`  Goals: ${p.goals.join('; ')}`)
           if (p.guardrails.length > 0) lines.push(`  Guardrails: ${p.guardrails.join('; ')}`)
-          if (p.milestones.length > 0) {
-            const open = p.milestones.filter(m => !m.completed)
-            lines.push(`  Milestones: ${p.milestones.length} total, ${open.length} open`)
-          }
           return lines.join('\n')
         }).join('\n\n')
 
@@ -257,38 +251,29 @@ export function createInternalToolServer(
 
   const createProject = tool(
     'create_project',
-    'Create a new project with name, domain, description, goals, milestones, and quarterly goal.',
+    'Create a new project with name, domain, description, north star, and guardrails.',
     {
       name: z.string().describe('Project name (required)'),
       slug: z.string().optional().describe('URL-friendly slug (auto-generated from name if omitted)'),
       description: z.string().optional().describe('What this project is about'),
       domain: z.string().optional().describe('Domain slug (omnissa, fbs, personal)'),
       status: z.string().optional().describe('Status: planning, active, paused, completed, archived (default: planning)'),
-      goals: z.array(z.string()).optional().describe('Project goals as an array of strings'),
-      quarterly_goal: z.string().optional().describe('Which quarterly goal this project supports'),
-      milestones: z.array(z.object({
-        title: z.string(),
-        target_date: z.string().optional(),
-      })).optional().describe('Project milestones with titles and optional target dates'),
       priority: z.number().optional().describe('Priority 0-5 (default: 3)'),
       north_star: z.string().optional().describe('The single North Star outcome that defines project success'),
       guardrails: z.array(z.string()).optional().describe('Guardrail constraints the project must stay within'),
       refinement_cadence: z.enum(['weekly', 'biweekly', 'monthly']).optional().describe('How often to refine and review this project'),
+      domain_goal_id: z.string().optional().describe('UUID of the domain goal this project supports'),
     },
     async (args) => {
       try {
         const clean = stripUndefined(args)
-        const input = {
-          ...clean,
-          milestones: args.milestones?.map(m => ({ title: m.title, target_date: m.target_date ?? null })),
-        }
-        const project = await data.createProject(input as Parameters<typeof data.createProject>[0])
+        const project = await data.createProject(clean as Parameters<typeof data.createProject>[0])
         return {
           content: [{
             type: 'text' as const,
             text: `Created project: "${project.name}" (${project.id})\nSlug: ${project.slug} | Domain: ${project.domain ?? 'none'} | Status: ${project.status}` +
-              (project.goals.length > 0 ? `\nGoals:\n${project.goals.map(g => `  - ${g}`).join('\n')}` : '') +
-              (project.milestones.length > 0 ? `\nMilestones:\n${project.milestones.map(m => `  - ${m.title}${m.target_date ? ` (by ${m.target_date})` : ''}`).join('\n')}` : ''),
+              (project.north_star ? `\nNorth Star: ${project.north_star}` : '') +
+              (project.guardrails.length > 0 ? `\nGuardrails:\n${project.guardrails.map(g => `  - ${g}`).join('\n')}` : ''),
           }],
         }
       } catch (err) {
@@ -306,15 +291,6 @@ export function createInternalToolServer(
       description: z.string().optional().describe('New description'),
       domain: z.string().optional().describe('New domain'),
       status: z.string().optional().describe('New status: planning, active, paused, completed, archived'),
-      goals: z.array(z.string()).optional().describe('Updated goals array'),
-      quarterly_goal: z.string().optional().describe('Updated quarterly goal'),
-      milestones: z.array(z.object({
-        id: z.string(),
-        title: z.string(),
-        target_date: z.string().optional(),
-        completed: z.boolean(),
-        completed_at: z.string().optional(),
-      })).optional().describe('Updated milestones array'),
       priority: z.number().optional().describe('New priority 0-5'),
       north_star: z.string().optional().describe('The single North Star outcome that defines project success'),
       guardrails: z.array(z.string()).optional().describe('Guardrail constraints the project must stay within'),
@@ -324,15 +300,8 @@ export function createInternalToolServer(
     },
     async (args) => {
       try {
-        const { project_id, milestones, ...rest } = args
+        const { project_id, ...rest } = args
         const updates: Record<string, unknown> = stripUndefined(rest)
-        if (milestones) {
-          updates.milestones = milestones.map(m => ({
-            ...m,
-            target_date: m.target_date ?? null,
-            completed_at: m.completed_at ?? null,
-          }))
-        }
         const project = await data.updateProject(project_id, updates as Parameters<typeof data.updateProject>[1])
         if (!project) return errorResult(`Project not found: ${project_id}`)
         return {
@@ -365,16 +334,11 @@ export function createInternalToolServer(
           briefing.push('No projects defined yet. This is a great opportunity to create some!')
         } else {
           for (const p of allProjects) {
-            const taskCount = (await data.listTasks({ project: p.name })).length
-            const openMilestones = p.milestones.filter(m => !m.completed)
+            const taskCount = (await data.listTasks({ project_id: p.id })).length
             briefing.push(`### ${p.name} [${p.status}] (${p.domain ?? 'no domain'}) — cadence: ${p.refinement_cadence}`)
             if (p.north_star) briefing.push(`  North Star: ${p.north_star}`)
-            if (p.quarterly_goal) briefing.push(`  Quarterly goal: ${p.quarterly_goal}`)
-            if (p.goals.length > 0) briefing.push(`  Goals: ${p.goals.join('; ')}`)
-            briefing.push(`  Tasks: ${taskCount} | Open milestones: ${openMilestones.length}`)
-            if (openMilestones.length > 0) {
-              briefing.push(`  Next milestones: ${openMilestones.slice(0, 3).map(m => m.title).join(', ')}`)
-            }
+            if (p.guardrails.length > 0) briefing.push(`  Guardrails: ${p.guardrails.join('; ')}`)
+            briefing.push(`  Tasks: ${taskCount}`)
 
             // Check for staleness
             const daysSinceUpdate = Math.floor((now.getTime() - new Date(p.updated_at).getTime()) / (1000 * 60 * 60 * 24))
@@ -414,15 +378,15 @@ export function createInternalToolServer(
           briefing.push('')
           briefing.push(`## Last Planning Session (${lastSession.created_at})`)
           briefing.push(`Focus: ${lastSession.focus_area}`)
-          if (lastSession.open_questions.length > 0) {
+          if ((lastSession.open_questions ?? []).length > 0) {
             briefing.push(`Open questions:`)
-            for (const q of lastSession.open_questions) {
+            for (const q of lastSession.open_questions!) {
               briefing.push(`  - ${q}`)
             }
           }
-          if (lastSession.next_steps.length > 0) {
+          if ((lastSession.next_steps ?? []).length > 0) {
             briefing.push(`Next steps:`)
-            for (const s of lastSession.next_steps) {
+            for (const s of lastSession.next_steps!) {
               briefing.push(`  - ${s}`)
             }
           }

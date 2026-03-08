@@ -24,7 +24,7 @@ export async function buildTaskPrompt(
 ): Promise<string> {
   let prompt = `Execute the following task:\n\n**Title**: ${task.title}\n`
   if (task.description) prompt += `**Description**: ${task.description}\n`
-  if (task.project) prompt += `**Project**: ${task.project}\n`
+  if (task.project_id) prompt += `**Project**: ${task.project_id}\n`
   if (task.domain) prompt += `**Domain**: ${task.domain}\n`
   if (task.due_date) prompt += `**Due**: ${task.due_date}\n`
   if (task.sprint) prompt += `**Sprint**: ${task.sprint}\n`
@@ -42,11 +42,6 @@ export async function buildTaskPrompt(
           for (const g of project.guardrails) {
             prompt += `    - ${g}\n`
           }
-        }
-        if (project.goals.length > 0) prompt += `  Goals: ${project.goals.join('; ')}\n`
-        const activeMilestones = project.milestones.filter(m => !m.completed)
-        if (activeMilestones.length > 0) {
-          prompt += `  Active Milestones: ${activeMilestones.map(m => m.title).join(', ')}\n`
         }
       }
     } catch {
@@ -89,7 +84,7 @@ export function buildAgentSystemPrompt(
 export function selectBestTask(tasks: Task[]): Task | null {
   if (tasks.length === 0) return null
 
-  const typeWeight: Record<string, number> = { MUST: 0, MIT: 1, BIG_ROCK: 2, STANDARD: 3 }
+  const typeWeight: Record<string, number> = { must: 0, mit: 1, big_rock: 2, standard: 3 }
   const sorted = [...tasks].sort((a, b) => {
     if (a.priority !== b.priority) return a.priority - b.priority
     const wa = typeWeight[a.task_type] ?? 3

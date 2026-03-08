@@ -8,7 +8,7 @@ function makeTask(title: string): Task {
     title,
     description: '',
     status: 'backlog',
-    task_type: 'STANDARD',
+    task_type: 'standard',
     priority: 3,
     domain: 'personal',
     created_at: new Date().toISOString(),

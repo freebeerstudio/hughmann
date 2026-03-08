@@ -1166,7 +1166,7 @@ async function manageTasks(flags: CliFlags) {
           : pc.green('To Do')
         console.log(`  ${pc.bold(label)}:`)
         for (const t of group) {
-          const type = t.task_type !== 'STANDARD' ? pc.cyan(`[${t.task_type}]`) : ''
+          const type = t.task_type !== 'standard' ? pc.cyan(`[${t.task_type}]`) : ''
           const domain = t.domain ? pc.dim(`(${t.domain})`) : ''
           const prio = t.priority <= 1 ? pc.red(`P${t.priority}`) : pc.dim(`P${t.priority}`)
           console.log(`    ${prio} ${type} ${t.title} ${domain} ${pc.dim(t.id.slice(0, 8))}`)
@@ -1190,7 +1190,7 @@ async function manageTasks(flags: CliFlags) {
       const task = await runtime.data.createTask({
         title,
         domain: domainIdx !== -1 ? flags.args[domainIdx + 1] : undefined,
-        task_type: typeIdx !== -1 ? flags.args[typeIdx + 1] as 'MUST' | 'MIT' | 'BIG_ROCK' | 'STANDARD' : undefined,
+        task_type: typeIdx !== -1 ? flags.args[typeIdx + 1] as 'must' | 'mit' | 'big_rock' | 'standard' : undefined,
         priority: prioIdx !== -1 ? parseInt(flags.args[prioIdx + 1], 10) : undefined,
       })
 
@@ -1230,7 +1230,7 @@ async function manageTasks(flags: CliFlags) {
       console.log()
       console.log(`  ${pc.bold('Backlog')} (${tasks.length}):`)
       for (const t of tasks) {
-        const type = t.task_type !== 'STANDARD' ? pc.cyan(`[${t.task_type}]`) : ''
+        const type = t.task_type !== 'standard' ? pc.cyan(`[${t.task_type}]`) : ''
         const domain = t.domain ? pc.dim(`(${t.domain})`) : ''
         console.log(`    P${t.priority} ${type} ${t.title} ${domain} ${pc.dim(t.id.slice(0, 8))}`)
       }
@@ -1247,7 +1247,7 @@ async function manageTasks(flags: CliFlags) {
       console.log()
       console.log(`  ${pc.bold(pc.red('Blocked'))} (${tasks.length}):`)
       for (const t of tasks) {
-        const type = t.task_type !== 'STANDARD' ? pc.cyan(`[${t.task_type}]`) : ''
+        const type = t.task_type !== 'standard' ? pc.cyan(`[${t.task_type}]`) : ''
         console.log(`    ${type} ${t.title} ${pc.dim(t.id.slice(0, 8))}`)
       }
       console.log()

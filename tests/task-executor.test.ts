@@ -8,18 +8,20 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     title: 'Test task',
     description: null,
     status: 'todo',
-    task_type: 'STANDARD',
+    task_type: 'standard',
     domain: null,
-    project: null,
     project_id: null,
+    sprint: null,
     priority: 3,
+    assignee: null,
+    assigned_agent_id: null,
+    blocked_reason: null,
     due_date: null,
     cwd: null,
     created_at: '2025-01-01T00:00:00Z',
     updated_at: '2025-01-01T00:00:00Z',
     completed_at: null,
     completion_notes: null,
-    metadata: {},
     ...overrides,
   }
 }
@@ -40,16 +42,16 @@ describe('selectBestTask', () => {
 
   it('breaks priority tie by task type weight', () => {
     const tasks = [
-      makeTask({ id: 'standard', priority: 2, task_type: 'STANDARD' }),
-      makeTask({ id: 'must', priority: 2, task_type: 'MUST' }),
+      makeTask({ id: 'standard', priority: 2, task_type: 'standard' }),
+      makeTask({ id: 'must', priority: 2, task_type: 'must' }),
     ]
     expect(selectBestTask(tasks)!.id).toBe('must')
   })
 
   it('breaks full tie by creation time', () => {
     const tasks = [
-      makeTask({ id: 'newer', priority: 2, task_type: 'STANDARD', created_at: '2025-06-01T00:00:00Z' }),
-      makeTask({ id: 'older', priority: 2, task_type: 'STANDARD', created_at: '2025-01-01T00:00:00Z' }),
+      makeTask({ id: 'newer', priority: 2, task_type: 'standard', created_at: '2025-06-01T00:00:00Z' }),
+      makeTask({ id: 'older', priority: 2, task_type: 'standard', created_at: '2025-01-01T00:00:00Z' }),
     ]
     expect(selectBestTask(tasks)!.id).toBe('older')
   })
@@ -64,9 +66,9 @@ describe('buildTaskPrompt', () => {
   })
 
   it('includes project and domain when present', async () => {
-    const task = makeTask({ project: 'HughMann', domain: 'personal' })
+    const task = makeTask({ project_id: 'proj-123', domain: 'personal' })
     const prompt = await buildTaskPrompt(task)
-    expect(prompt).toContain('HughMann')
+    expect(prompt).toContain('proj-123')
     expect(prompt).toContain('personal')
   })
 

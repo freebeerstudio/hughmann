@@ -648,7 +648,7 @@ async function processTaskQueue(
       durationMs: Date.now() - taskStartTime,
       summary: summary || undefined,
       domain: task.domain ?? undefined,
-      project: task.project ?? undefined,
+      project: task.project_id ?? undefined,
     })
 
     // Log result
@@ -667,7 +667,7 @@ async function processTaskQueue(
       durationMs: Date.now() - taskStartTime,
       error: errorMsg,
       domain: task.domain ?? undefined,
-      project: task.project ?? undefined,
+      project: task.project_id ?? undefined,
     })
   }
 

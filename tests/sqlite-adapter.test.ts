@@ -25,7 +25,7 @@ describe('SQLiteAdapter', () => {
         title: 'Test task',
         description: 'A test',
         status: 'todo',
-        task_type: 'STANDARD',
+        task_type: 'standard',
         priority: 3,
         domain: 'personal',
       })
@@ -40,7 +40,7 @@ describe('SQLiteAdapter', () => {
       const task = await adapter.createTask({
         title: 'Update me',
         status: 'todo',
-        task_type: 'MIT',
+        task_type: 'mit',
         priority: 2,
       })
 
@@ -53,7 +53,7 @@ describe('SQLiteAdapter', () => {
       const task = await adapter.createTask({
         title: 'Complete me',
         status: 'todo',
-        task_type: 'MUST',
+        task_type: 'must',
         priority: 1,
       })
 
@@ -64,17 +64,17 @@ describe('SQLiteAdapter', () => {
     })
 
     it('filters by multiple statuses', async () => {
-      await adapter.createTask({ title: 'A', status: 'todo', task_type: 'STANDARD', priority: 3 })
-      await adapter.createTask({ title: 'B', status: 'backlog', task_type: 'STANDARD', priority: 3 })
-      await adapter.createTask({ title: 'C', status: 'done', task_type: 'STANDARD', priority: 3 })
+      await adapter.createTask({ title: 'A', status: 'todo', task_type: 'standard', priority: 3 })
+      await adapter.createTask({ title: 'B', status: 'backlog', task_type: 'standard', priority: 3 })
+      await adapter.createTask({ title: 'C', status: 'done', task_type: 'standard', priority: 3 })
 
       const tasks = await adapter.listTasks({ status: ['todo', 'backlog'] })
       expect(tasks).toHaveLength(2)
     })
 
     it('filters by domain', async () => {
-      await adapter.createTask({ title: 'Work', status: 'todo', task_type: 'STANDARD', priority: 3, domain: 'work' })
-      await adapter.createTask({ title: 'Personal', status: 'todo', task_type: 'STANDARD', priority: 3, domain: 'personal' })
+      await adapter.createTask({ title: 'Work', status: 'todo', task_type: 'standard', priority: 3, domain: 'work' })
+      await adapter.createTask({ title: 'Personal', status: 'todo', task_type: 'standard', priority: 3, domain: 'personal' })
 
       const tasks = await adapter.listTasks({ domain: 'work' })
       expect(tasks).toHaveLength(1)
@@ -90,13 +90,13 @@ describe('SQLiteAdapter', () => {
         description: 'A test project',
         domain: 'personal',
         status: 'active',
-        goals: ['Goal 1'],
+        guardrails: ['Guardrail 1'],
       })
 
       const project = await adapter.getProjectBySlug('test-project')
       expect(project).toBeTruthy()
       expect(project!.name).toBe('Test Project')
-      expect(project!.goals).toContain('Goal 1')
+      expect(project!.guardrails).toContain('Guardrail 1')
     })
 
     it('lists by status', async () => {
@@ -104,13 +104,13 @@ describe('SQLiteAdapter', () => {
         name: 'Active',
         slug: 'active',
         status: 'active',
-        goals: [],
+        domain: 'personal',
       })
       await adapter.createProject({
         name: 'Paused',
         slug: 'paused',
         status: 'paused',
-        goals: [],
+        domain: 'personal',
       })
 
       const active = await adapter.listProjects({ status: ['active'] })
