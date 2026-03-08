@@ -34,12 +34,15 @@ export function buildTomorrowQuery(): string {
 
   return `tell application "Calendar"
   set d to "${d}"
+  set acctName to "${account}"
+  set calName to "${calName}"
   set tomorrow to (current date) + 1 * days
   set tStart to tomorrow
   set time of tStart to 0
   set tEnd to tStart + 1 * days
 
-  set cal to calendar "${calName}" of account "${account}"
+  set acct to account acctName
+  set cal to calendar calName of acct
   set evts to (every event of cal whose start date >= tStart and start date < tEnd)
 
   set outputLines to {}

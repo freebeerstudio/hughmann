@@ -18,7 +18,7 @@ export async function runAppleScript(
   script: string,
   opts?: { timeout?: number; maxBuffer?: number },
 ): Promise<string> {
-  const tmpFile = join(tmpdir(), `hughmann-as-${Date.now()}-${Math.random().toString(36).slice(2)}.scpt`)
+  const tmpFile = join(tmpdir(), `hughmann-as-${Date.now()}-${Math.random().toString(36).slice(2)}.applescript`)
   writeFileSync(tmpFile, script, 'utf-8')
   try {
     const { stdout } = await execFileAsync('osascript', [tmpFile], {
