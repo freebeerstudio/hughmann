@@ -79,9 +79,9 @@ ${system.customRules ? `- ${system.customRules}` : ''}
 ## Core Operating Principles
 
 ### 1. Autonomy
-Do the work. Don't wait to be asked when the plan is clear. Read the
-master plan, identify next actions, and execute. If you can do it, do it.
-If you need approval, ask once and clearly.
+Do the work. Don't wait to be asked when the path is clear. Check domain
+goals and project North Stars, identify what moves the needle, and execute.
+If you can do it, do it. If you need approval, ask once and clearly.
 
 ### 2. Observability
 Everything you do is visible. Every agent run, every decision, every
@@ -142,7 +142,7 @@ ${domainSummary}
 ## What Matters
 
 These are the things ${result.system.name} should optimize for:
-1. Progress on the master plan across all domains
+1. Progress toward domain goals and project North Stars
 2. Protecting peak hours for deep work
 3. Keeping commitments and deadlines
 4. Reducing friction and eliminating busywork
@@ -158,17 +158,17 @@ function generateDomain(domain: LifeDomain, systemName: string): string {
 - **Type**: ${domain.type}
 - **Description**: ${domain.description}
 
-## Primary Goal
+## Domain Goal
 
-${domain.primaryGoal}
+${domain.domainGoal || domain.primaryGoal}
 
-## Quarterly Goals
-
-${domain.quarterlyGoals || '_Not yet defined_'}
+_This is a permanent guiding light — not a quarterly target. Reviewed quarterly to ensure it still resonates._
 
 ## Active Projects
 
 ${domain.activeProjects || '_None listed yet_'}
+
+_Each project should have a North Star (vivid vision of success) and 2-3 guardrails (constraints for prioritization). Use \`create_project\` with these fields._
 
 ## Tools & Systems
 
@@ -186,23 +186,30 @@ _${systemName} updates this section as it learns more about this domain._
 
 function generateMasterPlan(result: OnboardingResult): string {
   const domainGoals = result.domains.map(d => {
-    const goals = d.quarterlyGoals
-      ? d.quarterlyGoals.split('\n').map(g => `  - ${g.trim()}`).join('\n')
-      : '  - _Define quarterly goals_'
-
-    return `### ${d.name}\n\n**Primary goal**: ${d.primaryGoal}\n\n**This quarter**:\n${goals}`
+    return `### ${d.name}\n\n**Domain Goal**: ${d.domainGoal || d.primaryGoal}\n\n**Active Projects**: ${d.activeProjects || '_None yet — create projects with North Stars and guardrails_'}`
   }).join('\n\n')
 
-  return `# Master Plan
+  return `# Planning Pyramid
 
-## Vision
+## Domain Goals
 
-_What does success look like across all domains? Define this yourself, or
-ask ${result.system.name} to help you articulate it based on your goals._
-
-## Current Quarter
+_Permanent guiding lights — one sentence each. Reviewed quarterly to ensure they still resonate._
 
 ${domainGoals}
+
+## How the Pyramid Works
+
+\`\`\`
+Domain Goal (permanent, reviewed quarterly)
+  └── Project (has a North Star + guardrails)
+        └── Sprint (generated from refinement sessions)
+              └── Task (BIG_ROCK / MUST / MIT / STANDARD)
+\`\`\`
+
+- **Domain Goals** are permanent aspirations, not quarterly targets
+- **Project North Stars** are vivid qualitative visions of success
+- **Project Guardrails** are 2-3 constraints that help make prioritization calls
+- Every task traces back to a project and ultimately a domain goal
 
 ## Weekly Focus
 
@@ -320,7 +327,7 @@ When ${result.system.name} encounters something it cannot do, it follows this pr
 
 ### Step 5: Update Context
 - Update capabilities.md with the new capability
-- Log the addition in the master plan decision log
+- Log the addition in the planning pyramid decision log
 - Update relevant domain docs if the capability is domain-specific
 
 ## Constraints

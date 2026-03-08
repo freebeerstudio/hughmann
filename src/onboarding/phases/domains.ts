@@ -57,22 +57,22 @@ async function collectOneDomain(systemName: string, domainNumber: number, existi
   })
   if (p.isCancel(description)) return description
 
-  const primaryGoal = await p.text({
-    message: `What's your primary goal in "${String(name)}" right now?`,
-    placeholder: 'The one thing that matters most in this area',
-    defaultValue: existing?.primaryGoal,
+  const domainGoal = await p.text({
+    message: `What's the permanent guiding goal for "${String(name)}"?`,
+    placeholder: 'One aspirational sentence — e.g., "Increase revenue daily" or "Build the life I want"',
+    defaultValue: existing?.domainGoal || existing?.primaryGoal,
     validate: (v) => {
       if (!v?.trim()) return 'Even a rough goal helps the system prioritize'
     },
   })
-  if (p.isCancel(primaryGoal)) return primaryGoal
+  if (p.isCancel(domainGoal)) return domainGoal
 
   return {
     name: String(name),
     type: String(type),
     description: String(description),
-    primaryGoal: String(primaryGoal),
-    quarterlyGoals: existing?.quarterlyGoals ?? '',
+    primaryGoal: String(domainGoal),
+    domainGoal: String(domainGoal),
     activeProjects: existing?.activeProjects ?? '',
     tools: existing?.tools ?? '',
     biggestChallenge: existing?.biggestChallenge ?? '',
@@ -175,8 +175,8 @@ export async function collectDomains(systemName: string, existing?: LifeDomain[]
 }
 
 export async function deepDiveDomains(systemName: string, domains: LifeDomain[]): Promise<LifeDomain[] | symbol> {
-  // Check if any domains need deep dive (missing quarterly goals)
-  const needsDeepDive = domains.some(d => !d.quarterlyGoals)
+  // Check if any domains need deep dive (missing active projects)
+  const needsDeepDive = domains.some(d => !d.activeProjects)
   if (!needsDeepDive) {
     const goDeeper = await p.confirm({
       message: 'All domains have detail already. Want to review and update the deep-dive info?',
@@ -189,6 +189,9 @@ export async function deepDiveDomains(systemName: string, domains: LifeDomain[])
   p.note(
     `Let's go deeper on each domain. This is where ${systemName}\n` +
     `builds real understanding of your world.\n\n` +
+    `For each domain, we'll define active projects. Each project\n` +
+    `should have a North Star (vivid vision of success) that traces\n` +
+    `back to the domain goal.\n\n` +
     `Take your time here. The more context you provide,\n` +
     `the better ${systemName} can plan and execute autonomously.`,
     'Going Deeper'
@@ -196,17 +199,7 @@ export async function deepDiveDomains(systemName: string, domains: LifeDomain[])
 
   for (const domain of domains) {
     p.log.step(pc.bold(domain.name))
-
-    const quarterlyGoals = await p.text({
-      message: `What are your top goals for "${domain.name}" this quarter?`,
-      placeholder: 'List 2-3 goals, one per line. These become your guiding objectives.',
-      defaultValue: domain.quarterlyGoals || undefined,
-      validate: (v) => {
-        if (!v?.trim()) return 'Even rough goals help. What are you working toward?'
-      },
-    })
-    if (p.isCancel(quarterlyGoals)) return quarterlyGoals
-    domain.quarterlyGoals = String(quarterlyGoals)
+    p.log.message(pc.dim(`Domain goal: ${domain.domainGoal}`))
 
     const activeProjects = await p.text({
       message: `What projects are currently active in "${domain.name}"?`,

@@ -20,7 +20,10 @@ export interface LifeDomain {
   type: string
   description: string
   primaryGoal: string
-  quarterlyGoals: string
+  /** @deprecated Use domainGoal instead. Kept for backwards compat with existing onboarding data. */
+  quarterlyGoals?: string
+  /** Permanent aspirational domain goal — one sentence guiding light */
+  domainGoal: string
   activeProjects: string
   tools: string
   biggestChallenge: string
