@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import type { EmailCategory } from '../src/mail/gmail-categories.js'
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -6,7 +7,6 @@ const TEST_HOME = join(import.meta.dirname, '.test-gmail-categories')
 process.env.HUGHMANN_HOME = TEST_HOME
 
 const { loadCategories, saveCategories } = await import('../src/mail/gmail-categories.js')
-type EmailCategory = import('../src/mail/gmail-categories.js').EmailCategory
 
 describe('gmail-categories', () => {
   beforeEach(() => {

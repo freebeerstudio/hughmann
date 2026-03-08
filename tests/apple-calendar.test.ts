@@ -3,11 +3,29 @@ import { parseCalendarOutput, buildTomorrowQuery } from '../src/calendar/apple-c
 
 describe('apple-calendar', () => {
   describe('parseCalendarOutput', () => {
-    it('parses delimited event output into structured events', () => {
-      const raw = [
-        '9:00 AM|||10:00 AM|||Team Standup|||Conference Room|||false|||john@omnissa.com, jane@omnissa.com|||Weekly sync',
-        '2:00 PM|||3:00 PM|||Tarrant College - Horizon POC|||Teams|||false|||john@tarrant.edu, wayne@omnissa.com|||Review POC progress',
-      ].join('\n')
+    it('parses JSON event output into structured events', () => {
+      const raw = JSON.stringify([
+        {
+          title: 'Team Standup',
+          startTime: '9:00 AM',
+          endTime: '10:00 AM',
+          location: 'Conference Room',
+          attendees: ['john@omnissa.com', 'jane@omnissa.com'],
+          notes: 'Weekly sync',
+          calendarName: 'Calendar',
+          isAllDay: false,
+        },
+        {
+          title: 'Tarrant College - Horizon POC',
+          startTime: '2:00 PM',
+          endTime: '3:00 PM',
+          location: 'Teams',
+          attendees: ['john@tarrant.edu', 'wayne@omnissa.com'],
+          notes: 'Review POC progress',
+          calendarName: 'Calendar',
+          isAllDay: false,
+        },
+      ])
 
       const events = parseCalendarOutput(raw)
       expect(events).toHaveLength(2)
@@ -23,7 +41,9 @@ describe('apple-calendar', () => {
     })
 
     it('handles events with missing fields', () => {
-      const raw = '1:00 PM|||2:00 PM|||Quick Chat||||||false||||||'
+      const raw = JSON.stringify([
+        { title: 'Quick Chat', startTime: '1:00 PM', endTime: '2:00 PM', isAllDay: false },
+      ])
       const events = parseCalendarOutput(raw)
       expect(events).toHaveLength(1)
       expect(events[0].title).toBe('Quick Chat')
@@ -32,22 +52,34 @@ describe('apple-calendar', () => {
     })
 
     it('skips all-day events', () => {
-      const raw = [
-        '|||||||Company Holiday||||||true||||||',
-        '9:00 AM|||10:00 AM|||Standup|||Room A|||false|||team@omnissa.com|||',
-      ].join('\n')
+      const raw = JSON.stringify([
+        { title: 'Company Holiday', isAllDay: true },
+        {
+          title: 'Standup',
+          startTime: '9:00 AM',
+          endTime: '10:00 AM',
+          location: 'Room A',
+          attendees: ['team@omnissa.com'],
+          isAllDay: false,
+        },
+      ])
       const events = parseCalendarOutput(raw)
       expect(events).toHaveLength(1)
       expect(events[0].title).toBe('Standup')
     })
+
+    it('handles invalid JSON gracefully', () => {
+      expect(parseCalendarOutput('not json')).toEqual([])
+    })
   })
 
   describe('buildTomorrowQuery', () => {
-    it('generates AppleScript targeting Calendar in Exchange', () => {
+    it('generates JXA script targeting Calendar in Exchange', () => {
       const script = buildTomorrowQuery()
       expect(script).toContain('Calendar')
       expect(script).toContain('Exchange')
-      expect(script).toContain('start date')
+      expect(script).toContain('startDate')
+      expect(script).toContain('JSON.stringify')
     })
   })
 })

@@ -1,13 +1,15 @@
 /**
- * apple-calendar.ts — Read events from Apple Calendar via AppleScript.
+ * apple-calendar.ts — Read events from Apple Calendar via JXA.
  *
  * Queries Calendar.app for tomorrow's events from the Exchange "Calendar"
- * calendar. Returns structured event data for the prep-meetings skill.
+ * calendar using JavaScript for Automation (JXA). AppleScript cannot be used
+ * with Calendar.app on modern macOS because `event` is both a class name and
+ * a reserved keyword. JXA has no such conflict.
+ *
+ * Returns structured event data for the prep-meetings skill.
  */
 
 import { runAppleScript } from '../mail/applescript.js'
-
-const FIELD_DELIMITER = '|||'
 
 export interface CalendarEvent {
   title: string
@@ -21,7 +23,7 @@ export interface CalendarEvent {
 }
 
 /**
- * Build the AppleScript to query tomorrow's events from the Exchange calendar.
+ * Build a JXA script to query tomorrow's events from the Exchange calendar.
  * Configurable via env vars:
  *   CALENDAR_ACCOUNT — account name (default: "Exchange")
  *   CALENDAR_NAME — calendar name (default: "Calendar")
@@ -30,115 +32,128 @@ export function buildTomorrowQuery(): string {
   const account = process.env.CALENDAR_ACCOUNT ?? 'Exchange'
   const calName = process.env.CALENDAR_NAME ?? 'Calendar'
 
-  const d = FIELD_DELIMITER
+  return `
+var app = Application("Calendar");
 
-  return `tell application "Calendar"
-  set d to "${d}"
-  set targetAcct to "${account}"
-  set targetCal to "${calName}"
-  set tomorrow to (current date) + 1 * days
-  set tStart to tomorrow
-  set time of tStart to 0
-  set tEnd to tStart + 1 * days
+var targetAcct = ${JSON.stringify(account)};
+var targetCal = ${JSON.stringify(calName)};
 
-  -- Find the target calendar by iterating (Calendar.app lacks 'whose' on accounts)
-  set cal to missing value
-  repeat with a in (every account)
-    if name of a is targetAcct then
-      repeat with c in (every calendar of a)
-        if name of c is targetCal then
-          set cal to c
-          exit repeat
-        end if
-      end repeat
-      exit repeat
-    end if
-  end repeat
+// Calculate tomorrow's date range
+var now = new Date();
+var tStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+var tEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2, 0, 0, 0);
 
-  if cal is missing value then return ""
+// Find the target calendar
+var cal = null;
+var calendars = app.calendars();
+for (var i = 0; i < calendars.length; i++) {
+  var c = calendars[i];
+  try {
+    if (c.name() === targetCal) {
+      cal = c;
+      break;
+    }
+  } catch (e) {}
+}
 
-  set evts to (every event of cal whose start date >= tStart and start date < tEnd)
+if (!cal) {
+  JSON.stringify([]);
+} else {
+  var evts = cal.events.whose({
+    _and: [
+      { startDate: { _greaterThanEquals: tStart } },
+      { startDate: { _lessThan: tEnd } }
+    ]
+  })();
 
-  set outputLines to {}
-  repeat with e in evts
-    set eTitle to summary of e
-    set eStart to start date of e
-    set eEnd to end date of e
-    set eLoc to ""
-    try
-      set eLoc to location of e
-    end try
-    set eAllDay to allday event of e
-    set eNotes to ""
-    try
-      set eNotes to description of e
-    end try
+  var results = [];
+  for (var i = 0; i < evts.length; i++) {
+    var e = evts[i];
+    var title = "";
+    try { title = e.summary(); } catch (err) {}
+    var startDate = null;
+    try { startDate = e.startDate(); } catch (err) {}
+    var endDate = null;
+    try { endDate = e.endDate(); } catch (err) {}
+    var location = "";
+    try { location = e.location() || ""; } catch (err) {}
+    var isAllDay = false;
+    try { isAllDay = e.alldayEvent(); } catch (err) {}
+    var notes = "";
+    try { notes = e.description() || ""; } catch (err) {}
 
-    set startStr to ""
-    set endStr to ""
-    if not eAllDay then
-      set startStr to time string of eStart
-      set endStr to time string of eEnd
-    end if
+    var attendeeEmails = [];
+    try {
+      var atts = e.attendees();
+      for (var j = 0; j < atts.length; j++) {
+        try {
+          var email = atts[j].email();
+          if (email) attendeeEmails.push(email);
+        } catch (err) {}
+      }
+    } catch (err) {}
 
-    set attendeeList to ""
-    try
-      set atts to attendees of e
-      repeat with a in atts
-        set attendeeList to attendeeList & (email of a) & ", "
-      end repeat
-      if length of attendeeList > 2 then
-        set attendeeList to text 1 thru -3 of attendeeList
-      end if
-    end try
+    var startTime = "";
+    var endTime = "";
+    if (!isAllDay && startDate) {
+      startTime = startDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    }
+    if (!isAllDay && endDate) {
+      endTime = endDate.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    }
 
-    set allDayStr to "false"
-    if eAllDay then set allDayStr to "true"
+    results.push({
+      title: title,
+      startTime: startTime,
+      endTime: endTime,
+      location: location,
+      attendees: attendeeEmails,
+      notes: notes,
+      calendarName: targetCal,
+      isAllDay: isAllDay
+    });
+  }
 
-    set outputLine to startStr & d & endStr & d & eTitle & d & eLoc & d & allDayStr & d & attendeeList & d & eNotes
-    set end of outputLines to outputLine
-  end repeat
-
-  set AppleScript's text item delimiters to linefeed
-  return outputLines as text
-end tell`
+  JSON.stringify(results);
+}
+`
 }
 
 /**
- * Parse the delimited output from the AppleScript into structured events.
+ * Parse JSON output from the JXA script into structured events.
  * Skips all-day events (holidays, OOO, etc.)
  */
 export function parseCalendarOutput(raw: string): CalendarEvent[] {
   if (!raw.trim()) return []
 
-  const events: CalendarEvent[] = []
+  try {
+    const parsed = JSON.parse(raw) as Array<{
+      title?: string
+      startTime?: string
+      endTime?: string
+      location?: string
+      attendees?: string[]
+      notes?: string
+      calendarName?: string
+      isAllDay?: boolean
+    }>
 
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
-    const parts = line.split(FIELD_DELIMITER)
-    if (parts.length < 7) continue
-
-    const isAllDay = (parts[4] ?? '').trim() === 'true'
-    if (isAllDay) continue
-
-    const attendeeStr = (parts[5] ?? '').trim()
-    const attendees = attendeeStr
-      ? attendeeStr.split(',').map(a => a.trim()).filter(Boolean)
-      : []
-
-    events.push({
-      startTime: (parts[0] ?? '').trim(),
-      endTime: (parts[1] ?? '').trim(),
-      title: (parts[2] ?? '').trim(),
-      location: (parts[3] ?? '').trim(),
-      isAllDay,
-      attendees,
-      notes: (parts[6] ?? '').trim(),
-      calendarName: process.env.CALENDAR_NAME ?? 'Calendar',
-    })
+    return parsed
+      .filter(e => !e.isAllDay)
+      .map(e => ({
+        title: e.title ?? '',
+        startTime: e.startTime ?? '',
+        endTime: e.endTime ?? '',
+        location: e.location ?? '',
+        attendees: e.attendees ?? [],
+        notes: e.notes ?? '',
+        calendarName: e.calendarName ?? (process.env.CALENDAR_NAME ?? 'Calendar'),
+        isAllDay: e.isAllDay ?? false,
+      }))
+  } catch {
+    // Fallback: if not valid JSON, return empty
+    return []
   }
-
-  return events
 }
 
 /**
@@ -147,6 +162,6 @@ export function parseCalendarOutput(raw: string): CalendarEvent[] {
  */
 export async function getTomorrowEvents(): Promise<CalendarEvent[]> {
   const script = buildTomorrowQuery()
-  const raw = await runAppleScript(script, { timeout: 30_000 })
+  const raw = await runAppleScript(script, { timeout: 30_000, language: 'JavaScript' })
   return parseCalendarOutput(raw)
 }
