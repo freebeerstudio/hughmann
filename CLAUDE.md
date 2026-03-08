@@ -102,7 +102,7 @@ Directories starting with `_` are ignored. Legacy flat `.md` skill files still l
 
 ### Internal Tool Server
 
-The internal MCP server (`src/tools/internal-tools.ts`) exposes 16 tools in 6 categories: Task (4), Project (3), Planning (2), Context (1), MCP Management (3), Feedback (2), Utility (1).
+The internal MCP server (`src/tools/internal-tools.ts`) exposes 26 tools in 10 categories: Task (4), Project (3), Planning (2), Briefings (2), Advisors (2), Context (1), Knowledge Base (2), Content (6), MCP Management (3), Domain Goals (2), Feedback (2), Utility (1).
 
 ### Boot Sequence
 
@@ -205,14 +205,16 @@ Run `npm run lint` before committing. CI enforces this.
 | `src/runtime/entropy.ts` | Entropy prevention: stale tasks, docs, orphaned sessions |
 | `src/runtime/vault-sync.ts` | Obsidian vault → KB pipeline |
 | `src/runtime/welcome.ts` | Login welcome briefing |
-| `src/tools/internal-tools.ts` | Internal MCP tool server (16 tools) |
-| `src/adapters/data/types.ts` | `DataAdapter` interface (22+ methods) |
+| `src/tools/internal-tools.ts` | Internal MCP tool server (26 tools) |
+| `src/adapters/data/types.ts` | `DataAdapter` interface (32+ methods) |
 | `src/adapters/data/supabase.ts` | Supabase implementation + migrations |
 | `src/adapters/data/sqlite.ts` | SQLite (better-sqlite3) implementation |
 | `src/adapters/data/turso.ts` | Turso (cloud SQLite) implementation |
 | `src/types/context.ts` | `IsolationZone`, `ContextStore`, `DomainContext` |
 | `src/types/tasks.ts` | `Task`, `TaskStatus`, `TaskType` |
 | `src/types/projects.ts` | `Project`, `Milestone`, `PlanningSessionRecord` |
+| `src/types/content.ts` | `ContentPiece`, `Topic`, `ContentSource` |
+| `src/types/advisors.ts` | `Advisor` interface |
 | `src/types/model.ts` | `ModelRequest`, `ModelResponse`, `ToolOptions`, `McpServerConfig` |
 | `src/types/adapters.ts` | `ModelAdapter`, `FrontendAdapter` interfaces |
 | `src/daemon/index.ts` | Daemon: task queue, scheduled skills, mail processing |
@@ -220,9 +222,9 @@ Run `npm run lint` before committing. CI enforces this.
 | `src/util/logger.ts` | Structured JSON-lines logger |
 | `src/daemon/guardrails.ts` | Guardrail config, `canExecuteTask`, cooldown logic |
 | `src/skills/skill-creator/` | Bundled skill-creator (auto-installed to user dir) |
-| `src/trigger/` | Trigger.dev tasks (morning, closeout, review, context-sync) |
+| `src/trigger/` | Trigger.dev tasks (morning, closeout, review, context-sync, content-radar, seed-content) |
 | `trigger.config.ts` | Trigger.dev project config |
-| `tests/` | Vitest test files (13 files) |
+| `tests/` | Vitest test files (17 files, 123 tests) |
 | `eslint.config.js` | ESLint flat config (type-aware for src/) |
 | `.github/workflows/ci.yml` | CI pipeline: typecheck → test → lint |
 | `docs/` | User-facing documentation (10 files) |
