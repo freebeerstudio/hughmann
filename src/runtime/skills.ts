@@ -337,6 +337,8 @@ export class SkillManager {
     this.installBundledSkill('agent-celine')
     this.installBundledSkill('agent-mark')
     this.installBundledSkill('agent-support')
+    this.installBundledSkill('refine')
+    this.installBundledSkill('scaffold-project')
   }
 
   /** Copy a bundled skill from src/skills/ to user's skills dir if not present */
