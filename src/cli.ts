@@ -847,10 +847,30 @@ async function manageTrigger(flags: CliFlags) {
       break
     }
 
+    case 'seed-content': {
+      console.log(`  ${pc.bold('Seeding content sources and topics...')}`)
+      const runtime = await bootRuntime({ quiet: false })
+      if (!runtime.data) {
+        console.error(`  ${pc.red('✗')} No data adapter configured. Seeding requires Supabase.`)
+        process.exit(1)
+      }
+      const url = process.env.SUPABASE_URL || ''
+      const key = process.env.SUPABASE_KEY || ''
+      if (!url || !key) {
+        console.error(`  ${pc.red('✗')} SUPABASE_URL and SUPABASE_KEY must be set.`)
+        process.exit(1)
+      }
+      const { seedContentLocally } = await import('./trigger/seed-content.js')
+      const result = await seedContentLocally(url, key)
+      console.log(`  ${pc.green('✓')} Seeded ${result.sources} content sources and ${result.topics} topics`)
+      break
+    }
+
     default: {
-      console.log(`  ${pc.bold('Usage')}: hughmann trigger [dev|deploy|sync]`)
+      console.log(`  ${pc.bold('Usage')}: hughmann trigger [dev|deploy|sync|seed-content]`)
       console.log()
       console.log(`    ${pc.cyan('sync')}              Sync context docs to Supabase for cloud access`)
+      console.log(`    ${pc.cyan('seed-content')}      Seed initial content sources and topics`)
       console.log(`    ${pc.cyan('dev')}               Start Trigger.dev dev server (registers tasks)`)
       console.log(`    ${pc.cyan('deploy')}            Deploy tasks to Trigger.dev cloud`)
       console.log()

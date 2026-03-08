@@ -4,6 +4,7 @@ import type { DataAdapter } from './types.js'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
 import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
+import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
 export interface SupabaseConfig {
   url: string
@@ -658,6 +659,214 @@ export class SupabaseAdapter implements DataAdapter {
     return (data as Advisor) ?? null
   }
 
+  // ─── Content ───────────────────────────────────────────────────────────
+
+  async listContent(filters?: {
+    status?: ContentStatus | ContentStatus[]
+    domain?: string
+    topic_id?: string
+    limit?: number
+  }): Promise<ContentPiece[]> {
+    if (!this.ready) return []
+
+    let query = this.client
+      .from('content')
+      .select('*')
+      .order('created_at', { ascending: false })
+
+    if (filters?.status) {
+      if (Array.isArray(filters.status)) {
+        query = query.in('status', filters.status)
+      } else {
+        query = query.eq('status', filters.status)
+      }
+    }
+    if (filters?.domain) {
+      query = query.eq('domain', filters.domain)
+    }
+    if (filters?.topic_id) {
+      query = query.eq('topic_id', filters.topic_id)
+    }
+    if (filters?.limit) {
+      query = query.limit(filters.limit)
+    }
+
+    const { data } = await query
+    return (data ?? []).map(parseContentRow)
+  }
+
+  async createContent(input: {
+    domain: string
+    title: string
+    topic_id?: string
+    project_id?: string
+    status?: ContentStatus
+    platform?: ContentPlatform
+    body?: string
+    source_material?: { url: string; title: string; summary: string }[]
+    created_by?: string
+  }): Promise<ContentPiece> {
+    const now = new Date().toISOString()
+    const row = {
+      id: randomUUID(),
+      domain: input.domain,
+      title: input.title,
+      topic_id: input.topic_id ?? null,
+      project_id: input.project_id ?? null,
+      status: input.status ?? 'idea',
+      platform: input.platform ?? 'blog',
+      body: input.body ?? null,
+      source_material: input.source_material ?? [],
+      created_by: input.created_by ?? 'hughmann',
+      scheduled_at: null,
+      published_at: null,
+      published_url: null,
+      created_at: now,
+      updated_at: now,
+    }
+
+    await this.client.from('content').insert(row)
+    return parseContentRow(row)
+  }
+
+  async updateContent(id: string, input: {
+    title?: string
+    status?: ContentStatus
+    platform?: ContentPlatform
+    body?: string
+    topic_id?: string
+    project_id?: string
+    source_material?: { url: string; title: string; summary: string }[]
+    scheduled_at?: string
+    published_at?: string
+    published_url?: string
+  }): Promise<ContentPiece | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('content')
+      .update({ ...input, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select('*')
+      .single()
+
+    return data ? parseContentRow(data) : null
+  }
+
+  async getContent(id: string): Promise<ContentPiece | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('content')
+      .select('*')
+      .eq('id', id)
+      .single()
+
+    return data ? parseContentRow(data) : null
+  }
+
+  // ─── Topics ───────────────────────────────────────────────────────────
+
+  async listTopics(filters?: { domain?: string; active?: boolean }): Promise<Topic[]> {
+    if (!this.ready) return []
+
+    let query = this.client
+      .from('topics')
+      .select('*')
+      .order('name', { ascending: true })
+
+    if (filters?.domain) {
+      query = query.eq('domain', filters.domain)
+    }
+    if (filters?.active !== undefined) {
+      query = query.eq('active', filters.active)
+    }
+
+    const { data } = await query
+    return (data ?? []) as Topic[]
+  }
+
+  async createTopic(input: { domain: string; name: string; description?: string }): Promise<Topic> {
+    const now = new Date().toISOString()
+    const row = {
+      id: randomUUID(),
+      domain: input.domain,
+      name: input.name,
+      description: input.description ?? null,
+      active: true,
+      created_at: now,
+    }
+
+    await this.client.from('topics').insert(row)
+    return row as Topic
+  }
+
+  async updateTopic(id: string, input: { name?: string; description?: string; active?: boolean }): Promise<Topic | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('topics')
+      .update(input)
+      .eq('id', id)
+      .select('*')
+      .single()
+
+    return (data as Topic) ?? null
+  }
+
+  // ─── Content Sources ──────────────────────────────────────────────────
+
+  async listContentSources(filters?: { domain?: string; active?: boolean; type?: ContentSourceType }): Promise<ContentSource[]> {
+    if (!this.ready) return []
+
+    let query = this.client
+      .from('content_sources')
+      .select('*')
+      .order('name', { ascending: true })
+
+    if (filters?.domain) {
+      query = query.eq('domain', filters.domain)
+    }
+    if (filters?.active !== undefined) {
+      query = query.eq('active', filters.active)
+    }
+    if (filters?.type) {
+      query = query.eq('type', filters.type)
+    }
+
+    const { data } = await query
+    return (data ?? []) as ContentSource[]
+  }
+
+  async createContentSource(input: { domain: string; name: string; type?: ContentSourceType; url?: string }): Promise<ContentSource> {
+    const now = new Date().toISOString()
+    const row = {
+      id: randomUUID(),
+      domain: input.domain,
+      name: input.name,
+      type: input.type ?? 'manual',
+      url: input.url ?? null,
+      active: true,
+      created_at: now,
+    }
+
+    await this.client.from('content_sources').insert(row)
+    return row as ContentSource
+  }
+
+  async updateContentSource(id: string, input: { name?: string; url?: string; active?: boolean }): Promise<ContentSource | null> {
+    if (!this.ready) return null
+
+    const { data } = await this.client
+      .from('content_sources')
+      .update(input)
+      .eq('id', id)
+      .select('*')
+      .single()
+
+    return (data as ContentSource) ?? null
+  }
+
   // ─── Feedback ───────────────────────────────────────────────────────────
 
   async saveFeedback(entry: {
@@ -696,6 +905,27 @@ export class SupabaseAdapter implements DataAdapter {
     query = query.order('created_at', { ascending: false }).limit(options?.limit ?? 50)
     const { data } = await query
     return (data ?? []) as { category: string; signal: string; content: string; domain: string | null; created_at: string }[]
+  }
+}
+
+/** Parse a Supabase row into a typed ContentPiece (ensures source_material is always an array) */
+function parseContentRow(row: Record<string, unknown>): ContentPiece {
+  return {
+    id: String(row.id),
+    domain: String(row.domain),
+    topic_id: row.topic_id != null ? String(row.topic_id) : null,
+    project_id: row.project_id != null ? String(row.project_id) : null,
+    title: String(row.title),
+    status: String(row.status) as ContentStatus,
+    platform: String(row.platform) as ContentPlatform,
+    body: row.body != null ? String(row.body) : null,
+    source_material: Array.isArray(row.source_material) ? row.source_material as { url: string; title: string; summary: string }[] : [],
+    scheduled_at: row.scheduled_at != null ? String(row.scheduled_at) : null,
+    published_at: row.published_at != null ? String(row.published_at) : null,
+    published_url: row.published_url != null ? String(row.published_url) : null,
+    created_by: String(row.created_by ?? 'hughmann'),
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
   }
 }
 
@@ -932,6 +1162,57 @@ CREATE TABLE IF NOT EXISTS feedback (
 CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback (category);
 CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback (created_at DESC);
 
+-- Topics table
+CREATE TABLE IF NOT EXISTS topics (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_topics_domain ON topics (domain);
+CREATE INDEX IF NOT EXISTS idx_topics_active ON topics (active);
+
+-- Content table
+CREATE TABLE IF NOT EXISTS content (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL,
+  topic_id UUID REFERENCES topics(id),
+  project_id UUID REFERENCES projects(id),
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'idea' CHECK (status IN ('idea', 'drafting', 'review', 'approved', 'scheduled', 'published', 'rejected')),
+  platform TEXT NOT NULL DEFAULT 'blog' CHECK (platform IN ('blog', 'linkedin', 'x', 'newsletter', 'youtube', 'shorts')),
+  body TEXT,
+  source_material JSONB NOT NULL DEFAULT '[]',
+  scheduled_at TIMESTAMPTZ,
+  published_at TIMESTAMPTZ,
+  published_url TEXT,
+  created_by TEXT NOT NULL DEFAULT 'hughmann',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_domain ON content (domain);
+CREATE INDEX IF NOT EXISTS idx_content_status ON content (status);
+CREATE INDEX IF NOT EXISTS idx_content_topic ON content (topic_id);
+CREATE INDEX IF NOT EXISTS idx_content_project ON content (project_id);
+
+-- Content sources table
+CREATE TABLE IF NOT EXISTS content_sources (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  domain TEXT NOT NULL,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'manual' CHECK (type IN ('rss', 'youtube', 'newsletter', 'manual')),
+  url TEXT,
+  active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_sources_domain ON content_sources (domain);
+CREATE INDEX IF NOT EXISTS idx_content_sources_active ON content_sources (active);
+
 -- Domain-to-customer mapping function
 CREATE OR REPLACE FUNCTION hughmann_customer_id(p_domain TEXT)
 RETURNS UUID AS $$
@@ -999,6 +1280,9 @@ ALTER TABLE domain_goals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE briefings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE advisors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE feedback ENABLE ROW LEVEL SECURITY;
+ALTER TABLE topics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE content ENABLE ROW LEVEL SECURITY;
+ALTER TABLE content_sources ENABLE ROW LEVEL SECURITY;
 
 -- Allow all operations for service key
 DO $$ BEGIN
@@ -1037,6 +1321,15 @@ DO $$ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'feedback' AND policyname = 'Allow all for service key') THEN
     CREATE POLICY "Allow all for service key" ON feedback FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'topics' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON topics FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'content' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON content FOR ALL USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'content_sources' AND policyname = 'Allow all for service key') THEN
+    CREATE POLICY "Allow all for service key" ON content_sources FOR ALL USING (true);
   END IF;
 END $$;
 `

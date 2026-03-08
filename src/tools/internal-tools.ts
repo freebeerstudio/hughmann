@@ -12,6 +12,7 @@ import type { ContextWriter } from '../runtime/context-writer.js'
 import type { MemoryManager } from '../runtime/memory.js'
 import type { TaskStatus, TaskType } from '../types/tasks.js'
 import type { ProjectStatus } from '../types/projects.js'
+import type { ContentStatus, ContentPlatform, ContentSourceType } from '../types/content.js'
 import { MCP_REGISTRY, findMatchingServers } from '../runtime/mcp-registry.js'
 import { addMcpServer, removeMcpServer } from '../runtime/mcp-config.js'
 
@@ -773,6 +774,292 @@ export function createInternalToolServer(
     }
   )
 
+  // ─── Content Tools ──────────────────────────────────────────────────────────
+
+  const listContent = tool(
+    'list_content',
+    'List content pieces with optional filters by status, domain, topic, or limit.',
+    {
+      status: z.string().optional().describe('Comma-separated statuses: idea, drafting, review, approved, scheduled, published, rejected'),
+      domain: z.string().optional().describe('Filter by domain slug'),
+      topic_id: z.string().optional().describe('Filter by topic ID'),
+      limit: z.number().optional().describe('Max results (default: 20)'),
+    },
+    async (args) => {
+      try {
+        const filters: Record<string, unknown> = {}
+        if (args.status) {
+          const statuses = args.status.split(',').map(s => s.trim()) as ContentStatus[]
+          filters.status = statuses.length === 1 ? statuses[0] : statuses
+        }
+        if (args.domain) filters.domain = args.domain
+        if (args.topic_id) filters.topic_id = args.topic_id
+        filters.limit = args.limit ?? 20
+
+        const content = await data.listContent(filters as Parameters<typeof data.listContent>[0])
+        return {
+          content: [{
+            type: 'text' as const,
+            text: content.length === 0
+              ? 'No content found matching those filters.'
+              : truncatedJson(content),
+          }],
+        }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const createContent = tool(
+    'create_content',
+    'Create a content idea or draft. Provide domain, title, and optional details like platform, body, or source material.',
+    {
+      domain: z.string().describe('Domain slug for this content'),
+      title: z.string().describe('Title of the content piece'),
+      topic_id: z.string().optional().describe('Topic ID to associate with'),
+      platform: z.enum(['blog', 'linkedin', 'x', 'newsletter', 'youtube', 'shorts']).optional().describe('Target platform'),
+      body: z.string().optional().describe('Content body/draft text'),
+      source_url: z.string().optional().describe('URL of source material'),
+      source_title: z.string().optional().describe('Title of source material'),
+      source_summary: z.string().optional().describe('Summary of source material'),
+    },
+    async (args) => {
+      try {
+        const input: Parameters<typeof data.createContent>[0] = {
+          domain: args.domain,
+          title: args.title,
+          topic_id: args.topic_id,
+          platform: args.platform as ContentPlatform | undefined,
+          body: args.body,
+        }
+
+        if (args.source_url) {
+          input.source_material = [{
+            url: args.source_url,
+            title: args.source_title ?? args.source_url,
+            summary: args.source_summary ?? '',
+          }]
+        }
+
+        const piece = await data.createContent(input)
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Content created: "${piece.title}" (id: ${piece.id}, status: ${piece.status})`,
+          }],
+        }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const updateContent = tool(
+    'update_content',
+    'Update a content piece — change status, title, body, platform, schedule, or published URL.',
+    {
+      id: z.string().describe('Content piece ID'),
+      status: z.enum(['idea', 'drafting', 'review', 'approved', 'scheduled', 'published', 'rejected']).optional().describe('New status'),
+      title: z.string().optional().describe('New title'),
+      body: z.string().optional().describe('New body text'),
+      platform: z.enum(['blog', 'linkedin', 'x', 'newsletter', 'youtube', 'shorts']).optional().describe('New platform'),
+      scheduled_at: z.string().optional().describe('ISO datetime for scheduling'),
+      published_url: z.string().optional().describe('URL where content was published'),
+    },
+    async (args) => {
+      try {
+        const updates = stripUndefined({
+          status: args.status as ContentStatus | undefined,
+          title: args.title,
+          body: args.body,
+          platform: args.platform as ContentPlatform | undefined,
+          scheduled_at: args.scheduled_at,
+          published_url: args.published_url,
+        })
+
+        const piece = await data.updateContent(args.id, updates)
+        if (!piece) return errorResult(`Content piece not found: ${args.id}`)
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Content updated: "${piece.title}" (status: ${piece.status})`,
+          }],
+        }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const manageTopics = tool(
+    'manage_topics',
+    'List, create, or update content topics. Use action param to choose operation.',
+    {
+      action: z.enum(['list', 'create', 'update']).describe('Operation to perform'),
+      domain: z.string().optional().describe('Domain slug (required for create, optional filter for list)'),
+      name: z.string().optional().describe('Topic name (for create)'),
+      description: z.string().optional().describe('Topic description (for create/update)'),
+      id: z.string().optional().describe('Topic ID (for update)'),
+      active: z.boolean().optional().describe('Active status (for update)'),
+    },
+    async (args) => {
+      try {
+        switch (args.action) {
+          case 'list': {
+            const topics = await data.listTopics({ domain: args.domain })
+            return {
+              content: [{
+                type: 'text' as const,
+                text: topics.length === 0
+                  ? 'No topics found.'
+                  : truncatedJson(topics),
+              }],
+            }
+          }
+          case 'create': {
+            if (!args.domain) return errorResult('domain is required for create')
+            if (!args.name) return errorResult('name is required for create')
+            const topic = await data.createTopic({
+              domain: args.domain,
+              name: args.name,
+              description: args.description,
+            })
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `Topic created: "${topic.name}" (id: ${topic.id})`,
+              }],
+            }
+          }
+          case 'update': {
+            if (!args.id) return errorResult('id is required for update')
+            const updates = stripUndefined({
+              name: args.name,
+              description: args.description,
+              active: args.active,
+            })
+            const updated = await data.updateTopic(args.id, updates)
+            if (!updated) return errorResult(`Topic not found: ${args.id}`)
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `Topic updated: "${updated.name}" (active: ${updated.active})`,
+              }],
+            }
+          }
+        }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const manageContentSources = tool(
+    'manage_content_sources',
+    'List, create, or update content sources (RSS feeds, YouTube channels, newsletters, etc.).',
+    {
+      action: z.enum(['list', 'create', 'update']).describe('Operation to perform'),
+      domain: z.string().optional().describe('Domain slug (required for create, optional filter for list)'),
+      name: z.string().optional().describe('Source name (for create)'),
+      url: z.string().optional().describe('Source URL (for create)'),
+      type: z.enum(['rss', 'youtube', 'newsletter', 'manual']).optional().describe('Source type (for create)'),
+      id: z.string().optional().describe('Source ID (for update)'),
+      active: z.boolean().optional().describe('Active status (for update)'),
+    },
+    async (args) => {
+      try {
+        switch (args.action) {
+          case 'list': {
+            const filters: { domain?: string; type?: ContentSourceType } = {}
+            if (args.domain) filters.domain = args.domain
+            if (args.type) filters.type = args.type as ContentSourceType
+            const sources = await data.listContentSources(filters)
+            return {
+              content: [{
+                type: 'text' as const,
+                text: sources.length === 0
+                  ? 'No content sources found.'
+                  : truncatedJson(sources),
+              }],
+            }
+          }
+          case 'create': {
+            if (!args.domain) return errorResult('domain is required for create')
+            if (!args.name) return errorResult('name is required for create')
+            const source = await data.createContentSource({
+              domain: args.domain,
+              name: args.name,
+              type: args.type as ContentSourceType | undefined,
+              url: args.url,
+            })
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `Content source created: "${source.name}" (id: ${source.id}, type: ${source.type})`,
+              }],
+            }
+          }
+          case 'update': {
+            if (!args.id) return errorResult('id is required for update')
+            const updates = stripUndefined({
+              name: args.name,
+              url: args.url,
+              active: args.active,
+            })
+            const updated = await data.updateContentSource(args.id, updates)
+            if (!updated) return errorResult(`Content source not found: ${args.id}`)
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `Content source updated: "${updated.name}" (active: ${updated.active})`,
+              }],
+            }
+          }
+        }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const reviewContentRadar = tool(
+    'review_content_radar',
+    'Quick view of latest content radar — shows recent ideas with title, source, and topic.',
+    {
+      limit: z.number().optional().describe('Max results (default: 20)'),
+    },
+    async (args) => {
+      try {
+        const ideas = await data.listContent({ status: 'idea', limit: args.limit ?? 20 })
+        if (ideas.length === 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: 'Content radar is empty — no ideas in the pipeline.',
+            }],
+          }
+        }
+
+        const lines = ideas.map((idea, i) => {
+          const source = idea.source_material?.[0]
+          const sourceInfo = source ? ` | source: ${source.title || source.url}` : ''
+          const topicInfo = idea.topic_id ? ` | topic: ${idea.topic_id}` : ''
+          return `${i + 1}. ${idea.title}${sourceInfo}${topicInfo}`
+        })
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Content Radar (${ideas.length} ideas):\n\n${lines.join('\n')}`,
+          }],
+        }
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
   // ─── Utility Tools ─────────────────────────────────────────────────────────
 
   const getCurrentTime = tool(
@@ -1038,6 +1325,8 @@ export function createInternalToolServer(
     listDomainGoals, updateDomainGoal,
     // Feedback
     recordFeedback, getFeedbackSummary,
+    // Content
+    listContent, createContent, updateContent, manageTopics, manageContentSources, reviewContentRadar,
     // Utility
     getCurrentTime,
   ]

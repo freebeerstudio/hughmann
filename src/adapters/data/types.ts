@@ -1,6 +1,7 @@
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
 import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
+import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
 /**
  * Common interface for data adapters (Supabase, SQLite, Turso, etc.)
@@ -170,6 +171,54 @@ export interface DataAdapter {
   listAdvisors(expertise?: string): Promise<Advisor[]>
   getAdvisor(id: string): Promise<Advisor | null>
   getAdvisorByName(name: string): Promise<Advisor | null>
+
+  // ─── Content ──────────────────────────────────────────────────────────
+
+  listContent(filters?: {
+    status?: ContentStatus | ContentStatus[]
+    domain?: string
+    topic_id?: string
+    limit?: number
+  }): Promise<ContentPiece[]>
+
+  createContent(input: {
+    domain: string
+    title: string
+    topic_id?: string
+    project_id?: string
+    status?: ContentStatus
+    platform?: ContentPlatform
+    body?: string
+    source_material?: { url: string; title: string; summary: string }[]
+    created_by?: string
+  }): Promise<ContentPiece>
+
+  updateContent(id: string, input: {
+    title?: string
+    status?: ContentStatus
+    platform?: ContentPlatform
+    body?: string
+    topic_id?: string
+    project_id?: string
+    source_material?: { url: string; title: string; summary: string }[]
+    scheduled_at?: string
+    published_at?: string
+    published_url?: string
+  }): Promise<ContentPiece | null>
+
+  getContent(id: string): Promise<ContentPiece | null>
+
+  // ─── Topics ───────────────────────────────────────────────────────────
+
+  listTopics(filters?: { domain?: string; active?: boolean }): Promise<Topic[]>
+  createTopic(input: { domain: string; name: string; description?: string }): Promise<Topic>
+  updateTopic(id: string, input: { name?: string; description?: string; active?: boolean }): Promise<Topic | null>
+
+  // ─── Content Sources ──────────────────────────────────────────────────
+
+  listContentSources(filters?: { domain?: string; active?: boolean; type?: ContentSourceType }): Promise<ContentSource[]>
+  createContentSource(input: { domain: string; name: string; type?: ContentSourceType; url?: string }): Promise<ContentSource>
+  updateContentSource(id: string, input: { name?: string; url?: string; active?: boolean }): Promise<ContentSource | null>
 
   // ─── Feedback ─────────────────────────────────────────────────────────
 

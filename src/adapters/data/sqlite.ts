@@ -8,6 +8,7 @@ import * as sqliteVec from 'sqlite-vec'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
 import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
+import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -163,6 +164,50 @@ CREATE TABLE IF NOT EXISTS advisors (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_advisors_name ON advisors (name);
+
+CREATE TABLE IF NOT EXISTS topics (
+  id TEXT PRIMARY KEY,
+  domain TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_topics_domain ON topics (domain);
+CREATE INDEX IF NOT EXISTS idx_topics_active ON topics (active);
+
+CREATE TABLE IF NOT EXISTS content_sources (
+  id TEXT PRIMARY KEY,
+  domain TEXT NOT NULL,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'rss' CHECK (type IN ('rss', 'youtube', 'newsletter', 'manual')),
+  url TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_content_sources_domain ON content_sources (domain);
+CREATE INDEX IF NOT EXISTS idx_content_sources_active ON content_sources (active);
+
+CREATE TABLE IF NOT EXISTS content (
+  id TEXT PRIMARY KEY,
+  domain TEXT NOT NULL,
+  topic_id TEXT,
+  project_id TEXT,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'idea' CHECK (status IN ('idea', 'drafting', 'review', 'approved', 'scheduled', 'published', 'rejected')),
+  platform TEXT NOT NULL DEFAULT 'blog' CHECK (platform IN ('blog', 'linkedin', 'x', 'newsletter', 'youtube', 'shorts')),
+  body TEXT,
+  source_material TEXT NOT NULL DEFAULT '[]',
+  scheduled_at TEXT,
+  published_at TEXT,
+  published_url TEXT,
+  created_by TEXT NOT NULL DEFAULT 'radar',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_content_status ON content (status);
+CREATE INDEX IF NOT EXISTS idx_content_domain ON content (domain);
+CREATE INDEX IF NOT EXISTS idx_content_topic ON content (topic_id);
 `
 
 /**
@@ -931,6 +976,284 @@ export class SQLiteAdapter implements DataAdapter {
     return row ? parseAdvisorRow(row) : null
   }
 
+  // ─── Content ───────────────────────────────────────────────────────────
+
+  async listContent(filters?: {
+    status?: ContentStatus | ContentStatus[]
+    domain?: string
+    topic_id?: string
+    limit?: number
+  }): Promise<ContentPiece[]> {
+    if (!this.ready) return []
+
+    const conditions: string[] = []
+    const params: unknown[] = []
+
+    if (filters?.status) {
+      if (Array.isArray(filters.status)) {
+        conditions.push(`status IN (${filters.status.map(() => '?').join(',')})`)
+        params.push(...filters.status)
+      } else {
+        conditions.push('status = ?')
+        params.push(filters.status)
+      }
+    }
+    if (filters?.domain) {
+      conditions.push('domain = ?')
+      params.push(filters.domain)
+    }
+    if (filters?.topic_id) {
+      conditions.push('topic_id = ?')
+      params.push(filters.topic_id)
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const limit = filters?.limit ? `LIMIT ${filters.limit}` : ''
+
+    const rows = this.db.prepare(`
+      SELECT * FROM content ${where}
+      ORDER BY created_at DESC ${limit}
+    `).all(...params) as Record<string, unknown>[]
+
+    return rows.map(parseSqliteContentRow)
+  }
+
+  async createContent(input: {
+    domain: string
+    title: string
+    topic_id?: string
+    project_id?: string
+    status?: ContentStatus
+    platform?: ContentPlatform
+    body?: string
+    source_material?: { url: string; title: string; summary: string }[]
+    created_by?: string
+  }): Promise<ContentPiece> {
+    const now = new Date().toISOString()
+    const id = randomUUID()
+
+    this.db.prepare(`
+      INSERT INTO content (id, domain, topic_id, project_id, title, status, platform, body, source_material, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, input.domain, input.topic_id ?? null, input.project_id ?? null,
+      input.title, input.status ?? 'idea', input.platform ?? 'blog',
+      input.body ?? null, JSON.stringify(input.source_material ?? []),
+      input.created_by ?? 'hughmann', now, now,
+    )
+
+    return {
+      id, domain: input.domain, topic_id: input.topic_id ?? null,
+      project_id: input.project_id ?? null, title: input.title,
+      status: input.status ?? 'idea', platform: input.platform ?? 'blog',
+      body: input.body ?? null, source_material: input.source_material ?? [],
+      scheduled_at: null, published_at: null, published_url: null,
+      created_by: input.created_by ?? 'hughmann', created_at: now, updated_at: now,
+    }
+  }
+
+  async updateContent(id: string, input: {
+    title?: string
+    status?: ContentStatus
+    platform?: ContentPlatform
+    body?: string
+    topic_id?: string
+    project_id?: string
+    source_material?: { url: string; title: string; summary: string }[]
+    scheduled_at?: string
+    published_at?: string
+    published_url?: string
+  }): Promise<ContentPiece | null> {
+    if (!this.ready) return null
+
+    const sets: string[] = []
+    const params: unknown[] = []
+
+    for (const [key, value] of Object.entries(input)) {
+      if (key === 'source_material') {
+        sets.push(`${key} = ?`)
+        params.push(JSON.stringify(value))
+      } else {
+        sets.push(`${key} = ?`)
+        params.push(value ?? null)
+      }
+    }
+
+    if (sets.length === 0) return this.getContent(id)
+
+    sets.push('updated_at = ?')
+    params.push(new Date().toISOString())
+    params.push(id)
+
+    this.db.prepare(`UPDATE content SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+    return this.getContent(id)
+  }
+
+  async getContent(id: string): Promise<ContentPiece | null> {
+    if (!this.ready) return null
+
+    const row = this.db.prepare('SELECT * FROM content WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    return row ? parseSqliteContentRow(row) : null
+  }
+
+  // ─── Topics ───────────────────────────────────────────────────────────
+
+  async listTopics(filters?: { domain?: string; active?: boolean }): Promise<Topic[]> {
+    if (!this.ready) return []
+
+    const conditions: string[] = []
+    const params: unknown[] = []
+
+    if (filters?.domain) {
+      conditions.push('domain = ?')
+      params.push(filters.domain)
+    }
+    if (filters?.active !== undefined) {
+      conditions.push('active = ?')
+      params.push(filters.active ? 1 : 0)
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+    const rows = this.db.prepare(`
+      SELECT * FROM topics ${where} ORDER BY name ASC
+    `).all(...params) as Record<string, unknown>[]
+
+    return rows.map(row => ({
+      id: String(row.id),
+      domain: String(row.domain),
+      name: String(row.name),
+      description: row.description != null ? String(row.description) : null,
+      active: row.active === 1 || row.active === true,
+      created_at: String(row.created_at),
+    }))
+  }
+
+  async createTopic(input: { domain: string; name: string; description?: string }): Promise<Topic> {
+    const now = new Date().toISOString()
+    const id = randomUUID()
+
+    this.db.prepare(`
+      INSERT INTO topics (id, domain, name, description, active, created_at)
+      VALUES (?, ?, ?, ?, 1, ?)
+    `).run(id, input.domain, input.name, input.description ?? null, now)
+
+    return {
+      id, domain: input.domain, name: input.name,
+      description: input.description ?? null, active: true, created_at: now,
+    }
+  }
+
+  async updateTopic(id: string, input: { name?: string; description?: string; active?: boolean }): Promise<Topic | null> {
+    if (!this.ready) return null
+
+    const sets: string[] = []
+    const params: unknown[] = []
+
+    for (const [key, value] of Object.entries(input)) {
+      if (key === 'active') {
+        sets.push(`${key} = ?`)
+        params.push(value ? 1 : 0)
+      } else {
+        sets.push(`${key} = ?`)
+        params.push(value ?? null)
+      }
+    }
+
+    if (sets.length === 0) return null
+    params.push(id)
+
+    this.db.prepare(`UPDATE topics SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+
+    const row = this.db.prepare('SELECT * FROM topics WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    if (!row) return null
+    return {
+      id: String(row.id), domain: String(row.domain), name: String(row.name),
+      description: row.description != null ? String(row.description) : null,
+      active: row.active === 1 || row.active === true, created_at: String(row.created_at),
+    }
+  }
+
+  // ─── Content Sources ──────────────────────────────────────────────────
+
+  async listContentSources(filters?: { domain?: string; active?: boolean; type?: ContentSourceType }): Promise<ContentSource[]> {
+    if (!this.ready) return []
+
+    const conditions: string[] = []
+    const params: unknown[] = []
+
+    if (filters?.domain) {
+      conditions.push('domain = ?')
+      params.push(filters.domain)
+    }
+    if (filters?.active !== undefined) {
+      conditions.push('active = ?')
+      params.push(filters.active ? 1 : 0)
+    }
+    if (filters?.type) {
+      conditions.push('type = ?')
+      params.push(filters.type)
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+    const rows = this.db.prepare(`
+      SELECT * FROM content_sources ${where} ORDER BY name ASC
+    `).all(...params) as Record<string, unknown>[]
+
+    return rows.map(row => ({
+      id: String(row.id), domain: String(row.domain), name: String(row.name),
+      type: String(row.type) as ContentSourceType, url: row.url != null ? String(row.url) : null,
+      active: row.active === 1 || row.active === true, created_at: String(row.created_at),
+    }))
+  }
+
+  async createContentSource(input: { domain: string; name: string; type?: ContentSourceType; url?: string }): Promise<ContentSource> {
+    const now = new Date().toISOString()
+    const id = randomUUID()
+
+    this.db.prepare(`
+      INSERT INTO content_sources (id, domain, name, type, url, active, created_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?)
+    `).run(id, input.domain, input.name, input.type ?? 'manual', input.url ?? null, now)
+
+    return {
+      id, domain: input.domain, name: input.name,
+      type: input.type ?? 'manual', url: input.url ?? null,
+      active: true, created_at: now,
+    }
+  }
+
+  async updateContentSource(id: string, input: { name?: string; url?: string; active?: boolean }): Promise<ContentSource | null> {
+    if (!this.ready) return null
+
+    const sets: string[] = []
+    const params: unknown[] = []
+
+    for (const [key, value] of Object.entries(input)) {
+      if (key === 'active') {
+        sets.push(`${key} = ?`)
+        params.push(value ? 1 : 0)
+      } else {
+        sets.push(`${key} = ?`)
+        params.push(value ?? null)
+      }
+    }
+
+    if (sets.length === 0) return null
+    params.push(id)
+
+    this.db.prepare(`UPDATE content_sources SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+
+    const row = this.db.prepare('SELECT * FROM content_sources WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    if (!row) return null
+    return {
+      id: String(row.id), domain: String(row.domain), name: String(row.name),
+      type: String(row.type) as ContentSourceType, url: row.url != null ? String(row.url) : null,
+      active: row.active === 1 || row.active === true, created_at: String(row.created_at),
+    }
+  }
+
   // ─── Feedback ───────────────────────────────────────────────────────────
 
   async saveFeedback(entry: {
@@ -1036,5 +1359,25 @@ function parseAdvisorRow(row: Omit<Advisor, 'expertise'> & { expertise: string }
   return {
     ...row,
     expertise: JSON.parse(row.expertise ?? '[]') as string[],
+  }
+}
+
+function parseSqliteContentRow(row: Record<string, unknown>): ContentPiece {
+  return {
+    id: String(row.id),
+    domain: String(row.domain),
+    topic_id: row.topic_id != null ? String(row.topic_id) : null,
+    project_id: row.project_id != null ? String(row.project_id) : null,
+    title: String(row.title),
+    status: String(row.status) as ContentStatus,
+    platform: String(row.platform) as ContentPlatform,
+    body: row.body != null ? String(row.body) : null,
+    source_material: JSON.parse(String(row.source_material ?? '[]')),
+    scheduled_at: row.scheduled_at != null ? String(row.scheduled_at) : null,
+    published_at: row.published_at != null ? String(row.published_at) : null,
+    published_url: row.published_url != null ? String(row.published_url) : null,
+    created_by: String(row.created_by ?? 'hughmann'),
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
   }
 }
