@@ -1,5 +1,6 @@
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
 import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
+import type { Advisor } from '../../types/advisors.js'
 
 /**
  * Common interface for data adapters (Supabase, SQLite, Turso, etc.)
@@ -48,35 +49,6 @@ export interface DataAdapter {
     content: string
     domain: string | null
     memory_date: string
-    created_at: string
-  }[]>
-
-  // ─── Decisions ───────────────────────────────────────────────────────
-
-  logDecision(entry: {
-    decision: string
-    reasoning: string
-    domain: string
-  }): Promise<void>
-
-  getDecisions(domain?: string, limit?: number): Promise<{
-    decision: string
-    reasoning: string
-    domain: string
-    created_at: string
-  }[]>
-
-  // ─── Domain Notes ────────────────────────────────────────────────────
-
-  addDomainNote(entry: {
-    domain: string
-    content: string
-    source: string
-  }): Promise<void>
-
-  getDomainNotes(domain: string, limit?: number): Promise<{
-    content: string
-    source: string
     created_at: string
   }[]>
 
@@ -172,6 +144,32 @@ export interface DataAdapter {
   listDomainGoals(domain?: string): Promise<DomainGoal[]>
   getDomainGoal(id: string): Promise<DomainGoal | null>
   updateDomainGoal(id: string, statement: string): Promise<DomainGoal | null>
+
+  // ─── Briefings ─────────────────────────────────────────────────────────
+
+  saveBriefing(type: 'morning' | 'closeout' | 'weekly_review' | 'custom', content: string, domain?: string): Promise<string>
+
+  getLatestBriefing(type?: string): Promise<{
+    id: string
+    type: string
+    domain: string | null
+    content: string
+    created_at: string
+  } | null>
+
+  listBriefings(limit?: number, type?: string): Promise<{
+    id: string
+    type: string
+    domain: string | null
+    content: string
+    created_at: string
+  }[]>
+
+  // ─── Advisors ──────────────────────────────────────────────────────────
+
+  listAdvisors(expertise?: string): Promise<Advisor[]>
+  getAdvisor(id: string): Promise<Advisor | null>
+  getAdvisorByName(name: string): Promise<Advisor | null>
 
   // ─── Feedback ─────────────────────────────────────────────────────────
 
