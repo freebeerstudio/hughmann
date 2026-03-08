@@ -30,8 +30,10 @@ export function buildTomorrowQuery(): string {
   const account = process.env.CALENDAR_ACCOUNT ?? 'Exchange'
   const calName = process.env.CALENDAR_NAME ?? 'Calendar'
 
-  return `
-tell application "Calendar"
+  const d = FIELD_DELIMITER
+
+  return `tell application "Calendar"
+  set d to "${d}"
   set tomorrow to (current date) + 1 * days
   set tStart to tomorrow
   set time of tStart to 0
@@ -55,7 +57,6 @@ tell application "Calendar"
       set eNotes to description of e
     end try
 
-    -- Format times
     set startStr to ""
     set endStr to ""
     if not eAllDay then
@@ -63,14 +64,13 @@ tell application "Calendar"
       set endStr to time string of eEnd
     end if
 
-    -- Get attendees
     set attendeeList to ""
     try
       set atts to attendees of e
       repeat with a in atts
         set attendeeList to attendeeList & (email of a) & ", "
       end repeat
-      if (count of attendeeList) > 2 then
+      if length of attendeeList > 2 then
         set attendeeList to text 1 thru -3 of attendeeList
       end if
     end try
@@ -78,7 +78,8 @@ tell application "Calendar"
     set allDayStr to "false"
     if eAllDay then set allDayStr to "true"
 
-    set end of outputLines to startStr & "${FIELD_DELIMITER}" & endStr & "${FIELD_DELIMITER}" & eTitle & "${FIELD_DELIMITER}" & eLoc & "${FIELD_DELIMITER}" & allDayStr & "${FIELD_DELIMITER}" & attendeeList & "${FIELD_DELIMITER}" & eNotes
+    set outputLine to startStr & d & endStr & d & eTitle & d & eLoc & d & allDayStr & d & attendeeList & d & eNotes
+    set end of outputLines to outputLine
   end repeat
 
   set AppleScript's text item delimiters to linefeed
