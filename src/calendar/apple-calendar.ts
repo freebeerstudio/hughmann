@@ -41,8 +41,8 @@ export function buildTomorrowQuery(): string {
   set time of tStart to 0
   set tEnd to tStart + 1 * days
 
-  set acct to account acctName
-  set cal to calendar calName of acct
+  set acct to first account whose name is acctName
+  set cal to first calendar of acct whose name is calName
   set evts to (every event of cal whose start date >= tStart and start date < tEnd)
 
   set outputLines to {}
