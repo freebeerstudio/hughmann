@@ -8,3 +8,4 @@ context/
 *.pid
 .DS_Store
 supabase/.temp/
+.trigger/
