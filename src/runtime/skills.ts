@@ -318,6 +318,7 @@ export class SkillManager {
     this.installBundledSkill('discover-email-categories')
     this.installBundledSkill('bulk-classify-email')
     this.installBundledSkill('process-email')
+    this.installBundledSkill('prep-meetings')
   }
 
   /** Copy a bundled skill from src/skills/ to user's skills dir if not present */

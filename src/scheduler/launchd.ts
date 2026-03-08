@@ -53,6 +53,7 @@ export function getDefaultSchedules(): { skillId: string; hour: number; minute: 
             { skillId: 'process-email', hour: 7, minute: 0, description: 'Process email at 7:00 AM' },
             { skillId: 'process-email', hour: 12, minute: 0, description: 'Process email at 12:00 PM' },
             { skillId: 'process-email', hour: 18, minute: 0, description: 'Process email at 6:00 PM' },
+            { skillId: 'prep-meetings', hour: 16, minute: 0, description: 'Meeting prep at 4:00 PM' },
           ]
         }
       }
@@ -68,6 +69,7 @@ export function getDefaultSchedules(): { skillId: string; hour: number; minute: 
     { skillId: 'process-email', hour: 7, minute: 0, description: 'Process email at 7:00 AM' },
     { skillId: 'process-email', hour: 12, minute: 0, description: 'Process email at 12:00 PM' },
     { skillId: 'process-email', hour: 18, minute: 0, description: 'Process email at 6:00 PM' },
+    { skillId: 'prep-meetings', hour: 16, minute: 0, description: 'Meeting prep at 4:00 PM' },
   ]
 }
 

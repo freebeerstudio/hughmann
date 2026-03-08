@@ -189,6 +189,18 @@ switch (flags.command) {
     break
   }
 
+  case 'calendar': {
+    const sub = flags.args[0]
+    if (sub === 'tomorrow') {
+      const { handleCalendarTomorrow } = await import('./calendar/calendar-cli.js')
+      await handleCalendarTomorrow()
+    } else {
+      console.log('Usage: hughmann calendar [tomorrow]')
+      console.log('  tomorrow  Show tomorrow\'s calendar events as JSON')
+    }
+    break
+  }
+
   case 'tasks': {
     await manageTasks(flags)
     break
@@ -1272,6 +1284,7 @@ function showUsage() {
   console.log(`    ${pc.cyan('tasks')}             Manage task queue ${pc.dim('(list|create|done|backlog|blocked)')}`)
   console.log(`    ${pc.cyan('mail')}              Process Elle mailbox emails ${pc.dim('(process|status)')}`)
   console.log(`    ${pc.cyan('gmail')}             Gmail classification ${pc.dim('(classify|discover)')}`)
+  console.log(`    ${pc.cyan('calendar')}          Apple Calendar events ${pc.dim('(tomorrow)')}`)
   console.log(`    ${pc.cyan('vault sync')}        Sync Obsidian vaults to database`)
   console.log(`    ${pc.cyan('trigger')}           Manage Trigger.dev ${pc.dim('(dev|deploy|sync)')}`)
   console.log(`    ${pc.cyan('schedule')}          Manage scheduled skills ${pc.dim('(launchd)')}`)
