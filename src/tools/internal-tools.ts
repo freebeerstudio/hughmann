@@ -65,7 +65,7 @@ export function createInternalToolServer(
       status: z.string().optional().describe('Comma-separated statuses: backlog, todo, in_progress, done, blocked'),
       domain: z.string().optional().describe('Filter by domain slug'),
       project: z.string().optional().describe('Filter by project name'),
-      task_type: z.string().optional().describe('Comma-separated types: MUST, MIT, BIG_ROCK, STANDARD'),
+      task_type: z.string().optional().describe('Comma-separated types: must, mit, big_rock, standard'),
       limit: z.number().optional().describe('Max results (default: 20)'),
     },
     async (args) => {
@@ -105,9 +105,8 @@ export function createInternalToolServer(
       title: z.string().describe('Task title (required)'),
       description: z.string().optional().describe('Detailed description of what needs to be done'),
       status: z.string().optional().describe('Status: backlog, todo, in_progress, done, blocked (default: todo)'),
-      task_type: z.string().optional().describe('Type: MUST, MIT, BIG_ROCK, STANDARD (default: STANDARD)'),
+      task_type: z.string().optional().describe('Type: must, mit, big_rock, standard (default: standard)'),
       domain: z.string().optional().describe('Domain slug (omnissa, fbs, personal)'),
-      project: z.string().optional().describe('Project name'),
       project_id: z.string().optional().describe('UUID of the project this task belongs to'),
       priority: z.number().optional().describe('Priority 0-5, lower is higher (default: 3)'),
       due_date: z.string().optional().describe('Due date (ISO 8601 or YYYY-MM-DD)'),
@@ -139,9 +138,8 @@ export function createInternalToolServer(
       title: z.string().optional().describe('New title'),
       description: z.string().optional().describe('New description'),
       status: z.string().optional().describe('New status: backlog, todo, in_progress, done, blocked'),
-      task_type: z.string().optional().describe('New type: MUST, MIT, BIG_ROCK, STANDARD'),
+      task_type: z.string().optional().describe('New type: must, mit, big_rock, standard'),
       domain: z.string().optional().describe('New domain'),
-      project: z.string().optional().describe('New project'),
       project_id: z.string().optional().describe('UUID of the project'),
       priority: z.number().optional().describe('New priority 0-5'),
       due_date: z.string().optional().describe('New due date'),
@@ -196,7 +194,7 @@ export function createInternalToolServer(
 
   const listProjects = tool(
     'list_projects',
-    'List projects from the database. Filter by domain and/or status. Returns project details including goals, milestones, and task counts.',
+    'List projects from the database. Filter by domain and/or status. Returns project details including North Star, guardrails, and task counts.',
     {
       domain: z.string().optional().describe('Filter by domain slug (omnissa, fbs, personal)'),
       status: z.string().optional().describe('Comma-separated statuses: planning, active, paused, completed, archived'),

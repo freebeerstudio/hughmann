@@ -141,7 +141,7 @@ function renderTasks(tasks) {
   el.innerHTML = tasks.map(t =>
     '<div class="task-item">' +
     '<div class="task-title">' + priority(t.priority) + ' ' + esc(t.title) + ' ' + badge(t.status) + '</div>' +
-    '<div class="task-meta">' + (t.domain || '') + (t.project ? ' / ' + t.project : '') +
+    '<div class="task-meta">' + (t.domain || '') + (t.project_id ? ' / ' + t.project_id : '') +
     (t.due_date ? ' | Due: ' + t.due_date : '') + ' | ' + timeAgo(t.created_at) + '</div>' +
     '</div>'
   ).join('');
@@ -154,7 +154,7 @@ function renderProjects(projects) {
     '<div class="project-item">' +
     '<div class="task-title">' + esc(p.name) + ' ' + badge(p.status) + '</div>' +
     '<div class="task-meta">' + (p.domain || 'no domain') +
-    (p.goals && p.goals.length ? ' | ' + p.goals.length + ' goal(s)' : '') +
+    (p.guardrails && p.guardrails.length ? ' | ' + p.guardrails.length + ' guardrail(s)' : '') +
     ' | ' + timeAgo(p.updated_at) + '</div>' +
     '</div>'
   ).join('');

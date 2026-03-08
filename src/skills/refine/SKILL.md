@@ -52,10 +52,10 @@ Create 3-7 concrete tasks for the next sprint:
 For each task, use `create_task` with:
 - **title**: Clear, actionable title
 - **description**: Enough detail to execute without additional context
-- **task_type**: BIG_ROCK for the 1-2 highest-impact items, MUST for critical path, MIT for important, STANDARD for everything else
+- **task_type**: big_rock for the 1-2 highest-impact items, must for critical path, mit for important, standard for everything else
 - **priority**: 0-1 urgent, 2 this week, 3 normal
 - **domain**: The project's domain
-- **project**: The project ID
+- **project_id**: The project UUID
 - **assignee**: "wayne", "hugh", or an agent slug (celine, mark, support)
 - **sprint**: A sprint identifier (e.g., "2026-W11" for week 11 of 2026)
 

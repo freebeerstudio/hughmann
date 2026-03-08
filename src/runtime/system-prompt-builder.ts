@@ -72,7 +72,7 @@ All work is organized in a hierarchy. Every task traces back to a domain goal:
 Domain Goal (permanent, reviewed quarterly)
   └── Project (has a North Star + guardrails)
         └── Sprint (generated from refinement sessions)
-              └── Task (BIG_ROCK / MUST / MIT / STANDARD)
+              └── Task (big_rock / must / mit / standard)
 \`\`\`
 
 **Domain Goals** are permanent guiding lights — one sentence each. NOT quarterly targets or SMART goals. They express the enduring aspiration for a domain. Examples: "Increase revenue daily", "Build the life I want."

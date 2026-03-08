@@ -203,7 +203,7 @@ ${domainGoals}
 Domain Goal (permanent, reviewed quarterly)
   └── Project (has a North Star + guardrails)
         └── Sprint (generated from refinement sessions)
-              └── Task (BIG_ROCK / MUST / MIT / STANDARD)
+              └── Task (big_rock / must / mit / standard)
 \`\`\`
 
 - **Domain Goals** are permanent aspirations, not quarterly targets

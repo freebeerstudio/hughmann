@@ -149,10 +149,10 @@ Propose changes and explain your reasoning.`,
 3. **Identify Gaps** — Compare project North Stars and guardrails against existing tasks. What work is missing to move projects toward their North Star?
 
 4. **Create Tasks** — Use \`create_task\` to create up to 10 new tasks that fill the gaps. For each task:
-   - Set appropriate \`task_type\`: MUST for critical blockers, MIT for daily priorities, BIG_ROCK for weekly goals, STANDARD for everything else
+   - Set appropriate \`task_type\`: must for critical blockers, mit for daily priorities, big_rock for weekly goals, standard for everything else
    - Set \`priority\`: 0-1 for urgent, 2 for this week, 3 for normal, 4-5 for someday
    - Set \`domain\` to the relevant domain slug
-   - Set \`project\` to the parent project
+   - Set \`project_id\` to the parent project's UUID
    - Set \`assignee\` if known (wayne, hugh, or an agent slug)
    - Write a clear \`description\` with enough detail to execute without context
 
@@ -191,7 +191,7 @@ Ask {{OWNER}} what needs attention. Then:
 - Propose 3-5 specific, actionable tasks based on the discussion
 - Each task should be completable in one work session
 - Every task must trace back to a project and its North Star
-- Assign appropriate type (MUST/MIT/BIG_ROCK/STANDARD), priority, domain, and assignee
+- Assign appropriate type (must/mit/big_rock/standard), priority, domain, and assignee
 - Get {{OWNER}}'s approval, then call \`create_task\` for each one
 
 ### 5. Capture & Close (2 min)
