@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import type { DataAdapter } from './types.js'
+import type { DataAdapter, CalendarEvent } from './types.js'
 import { cosineSimilarity } from '../../util/math.js'
 import * as sqliteVec from 'sqlite-vec'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
@@ -218,6 +218,27 @@ CREATE TABLE IF NOT EXISTS domain_goals (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_domain_goals_domain ON domain_goals (domain);
+
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  title TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  location TEXT,
+  attendees TEXT DEFAULT '[]',
+  calendar_name TEXT,
+  domain TEXT,
+  source TEXT DEFAULT 'manual',
+  external_id TEXT,
+  notes TEXT,
+  customer_id TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(external_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_time ON calendar_events(start_time, end_time);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_domain ON calendar_events(domain);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_customer ON calendar_events(customer_id);
 `
 
 /**
@@ -1346,6 +1367,34 @@ export class SQLiteAdapter implements DataAdapter {
       domain: string | null
       created_at: string
     }[]
+  }
+
+  // ─── Calendar Events ─────────────────────────────────────────────────
+
+  async listCalendarEvents(startDate: string, endDate: string, domain?: string): Promise<CalendarEvent[]> {
+    if (!this.ready) return []
+    const params: string[] = [startDate, endDate]
+    let sql = 'SELECT * FROM calendar_events WHERE start_time >= ? AND start_time <= ?'
+    if (domain) { sql += ' AND domain = ?'; params.push(domain) }
+    sql += ' ORDER BY start_time ASC'
+    return this.db.prepare(sql).all(...params) as CalendarEvent[]
+  }
+
+  async upsertCalendarEvent(event: Partial<CalendarEvent>): Promise<CalendarEvent> {
+    if (!this.ready) throw new Error('SQLite adapter not initialized')
+    const id = event.id || randomUUID()
+    const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO calendar_events (id, title, start_time, end_time, location, attendees, calendar_name, domain, source, external_id, notes, customer_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(external_id, source) DO UPDATE SET
+        title = excluded.title, start_time = excluded.start_time, end_time = excluded.end_time,
+        location = excluded.location, attendees = excluded.attendees, notes = excluded.notes,
+        updated_at = excluded.updated_at
+    `).run(...[id, event.title ?? '', event.start_time ?? '', event.end_time ?? '', event.location ?? null,
+      JSON.stringify(event.attendees ?? []), event.calendar_name ?? null, event.domain ?? null,
+      event.source ?? 'manual', event.external_id ?? null, event.notes ?? null,
+      event.customer_id ?? null, now, now])
+    return { ...event, id, source: event.source ?? 'manual', created_at: now, updated_at: now } as CalendarEvent
   }
 }
 

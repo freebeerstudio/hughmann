@@ -1,6 +1,6 @@
 import { createClient, type Client } from '@libsql/client'
 import { randomUUID } from 'node:crypto'
-import type { DataAdapter } from './types.js'
+import type { DataAdapter, CalendarEvent } from './types.js'
 import { cosineSimilarity } from '../../util/math.js'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
 import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, ProjectStatus, DomainGoal } from '../../types/projects.js'
@@ -180,6 +180,27 @@ const SCHEMA_STATEMENTS = [
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_domain_goals_domain ON domain_goals (domain)`,
+
+  `CREATE TABLE IF NOT EXISTS calendar_events (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    title TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    location TEXT,
+    attendees TEXT DEFAULT '[]',
+    calendar_name TEXT,
+    domain TEXT,
+    source TEXT DEFAULT 'manual',
+    external_id TEXT,
+    notes TEXT,
+    customer_id TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(external_id, source)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_calendar_events_time ON calendar_events(start_time, end_time)`,
+  `CREATE INDEX IF NOT EXISTS idx_calendar_events_domain ON calendar_events(domain)`,
+  `CREATE INDEX IF NOT EXISTS idx_calendar_events_customer ON calendar_events(customer_id)`,
 ]
 
 export interface TursoConfig {
@@ -1307,6 +1328,52 @@ export class TursoAdapter implements DataAdapter {
       domain: r.domain ? String(r.domain) : null,
       created_at: String(r.created_at),
     }))
+  }
+
+  // ─── Calendar Events ─────────────────────────────────────────────────
+
+  async listCalendarEvents(startDate: string, endDate: string, domain?: string): Promise<CalendarEvent[]> {
+    if (!this.ready) return []
+    const args: (string | number)[] = [startDate, endDate]
+    let sql = 'SELECT * FROM calendar_events WHERE start_time >= ? AND start_time <= ?'
+    if (domain) { sql += ' AND domain = ?'; args.push(domain) }
+    sql += ' ORDER BY start_time ASC'
+    const result = await this.client.execute({ sql, args })
+    return result.rows.map(r => ({
+      id: String(r.id),
+      title: String(r.title),
+      start_time: String(r.start_time),
+      end_time: String(r.end_time),
+      location: r.location ? String(r.location) : undefined,
+      attendees: r.attendees ? JSON.parse(String(r.attendees)) : [],
+      calendar_name: r.calendar_name ? String(r.calendar_name) : undefined,
+      domain: r.domain ? String(r.domain) : undefined,
+      source: String(r.source ?? 'manual'),
+      external_id: r.external_id ? String(r.external_id) : undefined,
+      notes: r.notes ? String(r.notes) : undefined,
+      customer_id: r.customer_id ? String(r.customer_id) : undefined,
+      created_at: r.created_at ? String(r.created_at) : undefined,
+      updated_at: r.updated_at ? String(r.updated_at) : undefined,
+    })) as CalendarEvent[]
+  }
+
+  async upsertCalendarEvent(event: Partial<CalendarEvent>): Promise<CalendarEvent> {
+    if (!this.ready) throw new Error('Turso adapter not initialized')
+    const id = event.id || randomUUID()
+    const now = new Date().toISOString()
+    await this.client.execute({
+      sql: `INSERT INTO calendar_events (id, title, start_time, end_time, location, attendees, calendar_name, domain, source, external_id, notes, customer_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(external_id, source) DO UPDATE SET
+          title = excluded.title, start_time = excluded.start_time, end_time = excluded.end_time,
+          location = excluded.location, attendees = excluded.attendees, notes = excluded.notes,
+          updated_at = excluded.updated_at`,
+      args: [id, event.title ?? '', event.start_time ?? '', event.end_time ?? '', event.location ?? null,
+        JSON.stringify(event.attendees ?? []), event.calendar_name ?? null, event.domain ?? null,
+        event.source ?? 'manual', event.external_id ?? null, event.notes ?? null,
+        event.customer_id ?? null, now, now],
+    })
+    return { ...event, id, source: event.source ?? 'manual', created_at: now, updated_at: now } as CalendarEvent
   }
 }
 

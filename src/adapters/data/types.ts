@@ -3,6 +3,23 @@ import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, P
 import type { Advisor } from '../../types/advisors.js'
 import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
+export interface CalendarEvent {
+  id: string
+  title: string
+  start_time: string
+  end_time: string
+  location?: string
+  attendees?: string[]
+  calendar_name?: string
+  domain?: string
+  source: string
+  external_id?: string
+  notes?: string
+  customer_id?: string
+  created_at?: string
+  updated_at?: string
+}
+
 /**
  * Common interface for data adapters (Supabase, SQLite, Turso, etc.)
  * Both persistent storage and vector memory operations.
@@ -242,4 +259,9 @@ export interface DataAdapter {
     domain: string | null
     created_at: string
   }[]>
+
+  // ─── Calendar Events ─────────────────────────────────────────────────
+
+  listCalendarEvents(startDate: string, endDate: string, domain?: string): Promise<CalendarEvent[]>
+  upsertCalendarEvent(event: Partial<CalendarEvent>): Promise<CalendarEvent>
 }

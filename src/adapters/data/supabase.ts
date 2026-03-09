@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { randomUUID } from 'node:crypto'
-import type { DataAdapter } from './types.js'
+import type { DataAdapter, CalendarEvent } from './types.js'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
 import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
@@ -908,6 +908,33 @@ export class SupabaseAdapter implements DataAdapter {
     query = query.order('created_at', { ascending: false }).limit(options?.limit ?? 50)
     const { data } = await query
     return (data ?? []) as { category: string; signal: string; content: string; domain: string | null; created_at: string }[]
+  }
+
+  // ─── Calendar Events ─────────────────────────────────────────────────
+
+  async listCalendarEvents(startDate: string, endDate: string, domain?: string): Promise<CalendarEvent[]> {
+    if (!this.ready) return []
+    let query = this.client
+      .from('calendar_events')
+      .select('*')
+      .gte('start_time', startDate)
+      .lte('start_time', endDate)
+      .order('start_time', { ascending: true })
+    if (domain) query = query.eq('domain', domain)
+    const { data, error } = await query
+    if (error) throw error
+    return (data ?? []) as CalendarEvent[]
+  }
+
+  async upsertCalendarEvent(event: Partial<CalendarEvent>): Promise<CalendarEvent> {
+    if (!this.ready) throw new Error('Supabase adapter not initialized')
+    const { data, error } = await this.client
+      .from('calendar_events')
+      .upsert(event, { onConflict: 'external_id,source' })
+      .select()
+      .single()
+    if (error) throw error
+    return data as CalendarEvent
   }
 }
 
