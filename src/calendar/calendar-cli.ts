@@ -96,8 +96,9 @@ export async function handleCalendarSync(opts: {
         notes: event.notes || undefined,
       })
       upserted++
-    } catch (e) {
-      console.error(`[calendar-sync] Error upserting "${event.title}": ${e instanceof Error ? e.message : e}`)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : JSON.stringify(e)
+      console.error(`[calendar-sync] Error upserting "${event.title}": ${msg}`)
       errors++
     }
   }
