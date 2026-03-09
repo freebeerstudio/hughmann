@@ -1,10 +1,14 @@
 import EventKit
 import Foundation
 
-// Read tomorrow's calendar events using EventKit and output JSON.
-// Usage: swift calendar-events.swift [calendarName]
-
-let calendarName = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "Calendar"
+// Read calendar events using EventKit and output JSON.
+//
+// Usage:
+//   calendar-events <calendarName>                    # tomorrow's events (legacy)
+//   calendar-events --range <start> <end>             # date range, all calendars
+//   calendar-events --range <start> <end> <calendar>  # date range, specific calendar
+//
+// Dates: YYYY-MM-DD format. End date is exclusive.
 
 let store = EKEventStore()
 let semaphore = DispatchSemaphore(value: 0)
@@ -29,26 +33,65 @@ guard accessGranted else {
     exit(1)
 }
 
-// Find matching calendar
-let calendars = store.calendars(for: .event).filter { $0.title == calendarName }
-guard !calendars.isEmpty else {
-    fputs("Warning: No calendar named '\(calendarName)' found.\n", stderr)
-    print("[]")
-    exit(0)
+// Parse arguments
+let args = CommandLine.arguments
+var startDate: Date
+var endDate: Date
+var calendarFilter: String? = nil
+
+let isoFormatter = ISO8601DateFormatter()
+isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+let dateOnlyFormatter = DateFormatter()
+dateOnlyFormatter.dateFormat = "yyyy-MM-dd"
+dateOnlyFormatter.timeZone = TimeZone.current
+
+let isoOutputFormatter = ISO8601DateFormatter()
+isoOutputFormatter.formatOptions = [.withInternetDateTime]
+
+if args.count >= 4 && args[1] == "--range" {
+    // Range mode: calendar-events --range 2026-03-09 2026-03-16 [CalendarName]
+    guard let start = dateOnlyFormatter.date(from: args[2]),
+          let end = dateOnlyFormatter.date(from: args[3]) else {
+        fputs("Error: Invalid date format. Use YYYY-MM-DD.\n", stderr)
+        print("[]")
+        exit(1)
+    }
+    startDate = start
+    endDate = end
+    if args.count >= 5 {
+        calendarFilter = args[4]
+    }
+} else {
+    // Legacy mode: calendar-events [CalendarName] — tomorrow only
+    let cal = Calendar.current
+    let today = cal.startOfDay(for: Date())
+    startDate = cal.date(byAdding: .day, value: 1, to: today)!
+    endDate = cal.date(byAdding: .day, value: 2, to: today)!
+    if args.count > 1 && args[1] != "--range" {
+        calendarFilter = args[1]
+    }
 }
 
-// Tomorrow's date range
-let cal = Calendar.current
-let today = cal.startOfDay(for: Date())
-let tomorrow = cal.date(byAdding: .day, value: 1, to: today)!
-let dayAfter = cal.date(byAdding: .day, value: 2, to: today)!
+// Get calendars
+var calendars: [EKCalendar]
+if let filter = calendarFilter {
+    calendars = store.calendars(for: .event).filter { $0.title == filter }
+    if calendars.isEmpty {
+        fputs("Warning: No calendar named '\(filter)' found.\n", stderr)
+        print("[]")
+        exit(0)
+    }
+} else {
+    calendars = store.calendars(for: .event)
+}
 
-let predicate = store.predicateForEvents(withStart: tomorrow, end: dayAfter, calendars: calendars)
+let predicate = store.predicateForEvents(withStart: startDate, end: endDate, calendars: calendars)
 let events = store.events(matching: predicate)
 
-let formatter = DateFormatter()
-formatter.dateFormat = "h:mm a"
-formatter.locale = Locale(identifier: "en_US")
+let timeFormatter = DateFormatter()
+timeFormatter.dateFormat = "h:mm a"
+timeFormatter.locale = Locale(identifier: "en_US")
 
 var results: [[String: Any]] = []
 for event in events {
@@ -64,8 +107,8 @@ for event in events {
 
     let entry: [String: Any] = [
         "title": event.title ?? "",
-        "startTime": event.isAllDay ? "" : formatter.string(from: event.startDate),
-        "endTime": event.isAllDay ? "" : formatter.string(from: event.endDate),
+        "startTime": isoOutputFormatter.string(from: event.startDate),
+        "endTime": isoOutputFormatter.string(from: event.endDate),
         "location": event.location ?? "",
         "attendees": attendeeEmails,
         "notes": event.notes ?? "",

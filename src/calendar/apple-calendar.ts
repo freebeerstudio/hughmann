@@ -1,15 +1,10 @@
 /**
  * apple-calendar.ts — Read events from Apple Calendar via EventKit.
  *
- * Runs a Swift script that uses EventKit (Apple's official calendar API)
- * to query tomorrow's events. Previous approaches failed:
- *   - AppleScript: `event` keyword conflict with Calendar.app
- *   - JXA: `whose` filter hangs on large event histories
- *   - icalBuddy: too old for modern macOS permissions
+ * Runs a compiled Swift binary that uses EventKit to query calendar events.
+ * Supports both single-day (tomorrow) and date range queries.
  *
- * The Swift script handles permission prompts, outputs JSON, and is fast.
- *
- * Returns structured event data for the prep-meetings skill.
+ * The Swift binary handles permission prompts, outputs JSON, and is fast.
  */
 
 import { execFile } from 'node:child_process'
@@ -76,6 +71,14 @@ export function parseCalendarOutput(raw: string): CalendarEvent[] {
   }
 }
 
+function handleCalendarError(err: unknown): never {
+  const msg = err instanceof Error ? err.message : String(err)
+  if (msg.includes('Calendar access denied')) {
+    throw new Error('Calendar access denied. Grant access in System Settings > Privacy & Security > Calendars.')
+  }
+  throw err
+}
+
 /**
  * Fetch tomorrow's events from Apple Calendar via EventKit.
  * On first run, macOS will prompt for Calendar access — click Allow.
@@ -90,10 +93,32 @@ export async function getTomorrowEvents(): Promise<CalendarEvent[]> {
     })
     return parseCalendarOutput(stdout.trim())
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    if (msg.includes('Calendar access denied')) {
-      throw new Error('Calendar access denied. Grant access in System Settings > Privacy & Security > Calendars.')
-    }
-    throw err
+    handleCalendarError(err)
+  }
+}
+
+/**
+ * Fetch events for a date range from Apple Calendar.
+ * @param startDate YYYY-MM-DD
+ * @param endDate YYYY-MM-DD (exclusive)
+ * @param calendarName Optional — filter to a specific calendar
+ */
+export async function getEventsInRange(
+  startDate: string,
+  endDate: string,
+  calendarName?: string
+): Promise<CalendarEvent[]> {
+  const binaryPath = getCalendarBinaryPath()
+  const args = ['--range', startDate, endDate]
+  if (calendarName) args.push(calendarName)
+
+  try {
+    const { stdout } = await execFileAsync(binaryPath, args, {
+      timeout: 30_000,
+      maxBuffer: 5 * 1024 * 1024,
+    })
+    return parseCalendarOutput(stdout.trim())
+  } catch (err) {
+    handleCalendarError(err)
   }
 }

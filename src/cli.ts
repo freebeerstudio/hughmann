@@ -194,9 +194,24 @@ switch (flags.command) {
     if (sub === 'tomorrow') {
       const { handleCalendarTomorrow } = await import('./calendar/calendar-cli.js')
       await handleCalendarTomorrow()
+    } else if (sub === 'sync') {
+      const { handleCalendarSync } = await import('./calendar/calendar-cli.js')
+      const dryRun = flags.args.includes('--dry-run')
+      const daysIdx = flags.args.indexOf('--days')
+      const daysAhead = daysIdx !== -1 ? parseInt(flags.args[daysIdx + 1], 10) : 7
+      const calIdx = flags.args.indexOf('--calendar')
+      const calendarName = calIdx !== -1 ? flags.args[calIdx + 1] : undefined
+      const domIdx = flags.args.indexOf('--domain')
+      const domain = domIdx !== -1 ? flags.args[domIdx + 1] : undefined
+      await handleCalendarSync({ daysAhead, calendarName, domain, dryRun })
     } else {
-      console.log('Usage: hughmann calendar [tomorrow]')
+      console.log('Usage: hughmann calendar <command>')
       console.log('  tomorrow  Show tomorrow\'s calendar events as JSON')
+      console.log('  sync      Sync Apple Calendar events to Supabase')
+      console.log('            --dry-run         Preview without writing')
+      console.log('            --days N          Days ahead to sync (default 7)')
+      console.log('            --calendar NAME   Filter to specific calendar')
+      console.log('            --domain SLUG     Domain tag (default: omnissa)')
     }
     break
   }
