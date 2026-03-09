@@ -6,7 +6,7 @@ import type { DataAdapter, CalendarEvent } from './types.js'
 import { cosineSimilarity } from '../../util/math.js'
 import * as sqliteVec from 'sqlite-vec'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal, ApprovalBundle, ApprovalBundleFilters } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
 import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
@@ -83,12 +83,32 @@ CREATE TABLE IF NOT EXISTS projects (
   infrastructure TEXT NOT NULL DEFAULT '{}',
   refinement_cadence TEXT DEFAULT 'weekly' CHECK (refinement_cadence IN ('weekly', 'biweekly', 'monthly')),
   last_refinement_at TEXT,
+  approval_mode TEXT NOT NULL DEFAULT 'required' CHECK (approval_mode IN ('required', 'auto_proceed', 'notify_only')),
+  local_path TEXT,
+  stack TEXT NOT NULL DEFAULT '[]',
+  claude_md_exists INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_projects_domain ON projects (domain);
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects (status);
 CREATE INDEX IF NOT EXISTS idx_projects_slug ON projects (slug);
+
+CREATE TABLE IF NOT EXISTS approval_bundles (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  summary TEXT NOT NULL,
+  proposed_tasks TEXT NOT NULL DEFAULT '[]',
+  reasoning TEXT NOT NULL,
+  expires_at TEXT,
+  resolved_at TEXT,
+  resolved_by TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_approval_bundles_project ON approval_bundles (project_id);
+CREATE INDEX IF NOT EXISTS idx_approval_bundles_status ON approval_bundles (status);
 
 CREATE TABLE IF NOT EXISTS planning_sessions (
   id TEXT PRIMARY KEY,
@@ -809,18 +829,24 @@ export class SQLiteAdapter implements DataAdapter {
       infrastructure: input.infrastructure ?? {},
       refinement_cadence: input.refinement_cadence ?? 'weekly',
       last_refinement_at: null,
+      approval_mode: input.approval_mode ?? 'required',
+      local_path: input.local_path ?? null,
+      stack: input.stack ?? [],
+      claude_md_exists: input.claude_md_exists ?? false,
       created_at: now,
       updated_at: now,
     }
 
     this.db.prepare(`
-      INSERT INTO projects (id, name, slug, description, domain, status, priority, domain_goal_id, north_star, guardrails, infrastructure, refinement_cadence, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO projects (id, name, slug, description, domain, status, priority, domain_goal_id, north_star, guardrails, infrastructure, refinement_cadence, approval_mode, local_path, stack, claude_md_exists, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       project.id, project.name, project.slug, project.description, project.domain,
       project.status, project.priority, project.domain_goal_id,
       project.north_star, JSON.stringify(project.guardrails),
       JSON.stringify(project.infrastructure), project.refinement_cadence,
+      project.approval_mode, project.local_path,
+      JSON.stringify(project.stack), project.claude_md_exists ? 1 : 0,
       project.created_at, project.updated_at,
     )
 
@@ -834,9 +860,12 @@ export class SQLiteAdapter implements DataAdapter {
     const params: unknown[] = []
 
     for (const [key, value] of Object.entries(input)) {
-      if (['guardrails', 'infrastructure'].includes(key)) {
+      if (['guardrails', 'infrastructure', 'stack'].includes(key)) {
         sets.push(`${key} = ?`)
         params.push(JSON.stringify(value))
+      } else if (key === 'claude_md_exists') {
+        sets.push(`${key} = ?`)
+        params.push(value ? 1 : 0)
       } else {
         sets.push(`${key} = ?`)
         params.push(value ?? null)
@@ -865,6 +894,75 @@ export class SQLiteAdapter implements DataAdapter {
 
     const row = this.db.prepare('SELECT * FROM projects WHERE slug = ?').get(slug) as Record<string, unknown> | undefined
     return row ? parseSqliteProject(row) : null
+  }
+
+  // ─── Approval Bundles ──────────────────────────────────────────────────
+
+  async createApprovalBundle(input: Omit<ApprovalBundle, 'id' | 'created_at'>): Promise<ApprovalBundle> {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+
+    this.db.prepare(`
+      INSERT INTO approval_bundles (id, project_id, domain, status, summary, proposed_tasks, reasoning, expires_at, resolved_at, resolved_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id, input.project_id, input.domain, input.status, input.summary,
+      JSON.stringify(input.proposed_tasks), input.reasoning,
+      input.expires_at ?? null, input.resolved_at ?? null, input.resolved_by ?? null, now,
+    )
+
+    return {
+      id,
+      ...input,
+      created_at: now,
+    }
+  }
+
+  async listApprovalBundles(filters?: ApprovalBundleFilters): Promise<ApprovalBundle[]> {
+    const conditions: string[] = []
+    const params: unknown[] = []
+
+    if (filters?.project_id) {
+      conditions.push('project_id = ?')
+      params.push(filters.project_id)
+    }
+    if (filters?.status) {
+      conditions.push('status = ?')
+      params.push(filters.status)
+    }
+    if (filters?.domain) {
+      conditions.push('domain = ?')
+      params.push(filters.domain)
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+    const rows = this.db.prepare(`
+      SELECT * FROM approval_bundles ${where} ORDER BY created_at DESC
+    `).all(...params) as Record<string, unknown>[]
+
+    return rows.map(parseSqliteApprovalBundle)
+  }
+
+  async updateApprovalBundle(id: string, input: { status: string; resolved_at?: string; resolved_by?: string }): Promise<ApprovalBundle | null> {
+    const sets: string[] = ['status = ?']
+    const params: unknown[] = [input.status]
+
+    if (input.resolved_at !== undefined) {
+      sets.push('resolved_at = ?')
+      params.push(input.resolved_at)
+    }
+    if (input.resolved_by !== undefined) {
+      sets.push('resolved_by = ?')
+      params.push(input.resolved_by)
+    }
+
+    params.push(id)
+
+    this.db.prepare(`UPDATE approval_bundles SET ${sets.join(', ')} WHERE id = ?`).run(...params)
+
+    const row = this.db.prepare('SELECT * FROM approval_bundles WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    return row ? parseSqliteApprovalBundle(row) : null
   }
 
   // ─── Domain Goals ──────────────────────────────────────────────────────
@@ -1398,6 +1496,23 @@ export class SQLiteAdapter implements DataAdapter {
   }
 }
 
+/** Parse a SQLite row into a typed ApprovalBundle */
+function parseSqliteApprovalBundle(row: Record<string, unknown>): ApprovalBundle {
+  return {
+    id: String(row.id),
+    project_id: String(row.project_id),
+    domain: String(row.domain),
+    status: String(row.status) as ApprovalBundle['status'],
+    summary: String(row.summary),
+    proposed_tasks: JSON.parse(String(row.proposed_tasks ?? '[]')),
+    reasoning: String(row.reasoning),
+    expires_at: row.expires_at != null ? String(row.expires_at) : null,
+    resolved_at: row.resolved_at != null ? String(row.resolved_at) : null,
+    resolved_by: row.resolved_by != null ? String(row.resolved_by) : null,
+    created_at: String(row.created_at),
+  }
+}
+
 /** Parse a SQLite row into a typed Project (JSON-encoded arrays) */
 function parseSqliteProject(row: Record<string, unknown>): Project {
   return {
@@ -1414,6 +1529,10 @@ function parseSqliteProject(row: Record<string, unknown>): Project {
     infrastructure: JSON.parse(String(row.infrastructure ?? '{}')),
     refinement_cadence: (row.refinement_cadence as Project['refinement_cadence']) ?? 'weekly',
     last_refinement_at: row.last_refinement_at != null ? String(row.last_refinement_at) : null,
+    approval_mode: (row.approval_mode as Project['approval_mode']) ?? 'required',
+    local_path: row.local_path != null ? String(row.local_path) : null,
+    stack: JSON.parse(String(row.stack ?? '[]')),
+    claude_md_exists: Boolean(row.claude_md_exists),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   }

@@ -233,6 +233,8 @@ export function createInternalToolServer(
           ]
           if (p.north_star) lines.push(`  North Star: ${p.north_star}`)
           if (p.guardrails.length > 0) lines.push(`  Guardrails: ${p.guardrails.join('; ')}`)
+          lines.push(`  Approval: ${p.approval_mode}`)
+          if (p.local_path) lines.push(`  Path: ${p.local_path}`)
           return lines.join('\n')
         }).join('\n\n')
 
@@ -262,6 +264,10 @@ export function createInternalToolServer(
       guardrails: z.array(z.string()).optional().describe('Guardrail constraints the project must stay within'),
       refinement_cadence: z.enum(['weekly', 'biweekly', 'monthly']).optional().describe('How often to refine and review this project'),
       domain_goal_id: z.string().optional().describe('UUID of the domain goal this project supports'),
+      approval_mode: z.enum(['required', 'auto_proceed', 'notify_only']).optional().describe('Approval mode for autonomous refinement bundles'),
+      local_path: z.string().optional().describe('Local filesystem path to the project repo'),
+      stack: z.array(z.string()).optional().describe('Tech stack tags (e.g. ["typescript", "react"])'),
+      claude_md_exists: z.boolean().optional().describe('Whether the project has a CLAUDE.md file'),
     },
     async (args) => {
       try {
@@ -296,6 +302,10 @@ export function createInternalToolServer(
       refinement_cadence: z.enum(['weekly', 'biweekly', 'monthly']).optional().describe('How often to refine and review this project'),
       domain_goal_id: z.string().optional().describe('UUID of the domain goal this project supports'),
       last_refinement_at: z.string().optional().describe('ISO timestamp of the last refinement session'),
+      approval_mode: z.enum(['required', 'auto_proceed', 'notify_only']).optional().describe('Approval mode for autonomous refinement bundles'),
+      local_path: z.string().optional().describe('Local filesystem path to the project repo'),
+      stack: z.array(z.string()).optional().describe('Tech stack tags (e.g. ["typescript", "react"])'),
+      claude_md_exists: z.boolean().optional().describe('Whether the project has a CLAUDE.md file'),
     },
     async (args) => {
       try {
@@ -311,6 +321,293 @@ export function createInternalToolServer(
         }
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : String(err))
+      }
+    }
+  )
+
+  const registerProject = tool(
+    'register_project',
+    'Scan a project directory and register its infrastructure (stack, git remote, CLAUDE.md)',
+    {
+      project_id: z.string().describe('ID of existing project to update'),
+      local_path: z.string().describe('Absolute path to project directory'),
+    },
+    async (params) => {
+      try {
+        const fs = await import('fs/promises')
+        const nodePath = await import('path')
+        const { execSync } = await import('child_process')
+
+        const { project_id, local_path } = params
+
+        // Verify directory exists
+        const stat = await fs.stat(local_path).catch(() => null)
+        if (!stat?.isDirectory()) return errorResult(`Directory not found: ${local_path}`)
+
+        // Detect stack from files
+        const stack: string[] = []
+        const files = await fs.readdir(local_path)
+
+        if (files.includes('package.json')) {
+          try {
+            const pkg = JSON.parse(await fs.readFile(nodePath.join(local_path, 'package.json'), 'utf8'))
+            const deps = { ...pkg.dependencies, ...pkg.devDependencies }
+            if (deps.next) stack.push('nextjs')
+            if (deps.react && !deps.next) stack.push('react')
+            if (deps.vue) stack.push('vue')
+            if (deps.tailwindcss) stack.push('tailwind')
+            if (deps['@supabase/supabase-js']) stack.push('supabase')
+            if (deps.express) stack.push('express')
+            if (deps.prisma || deps['@prisma/client']) stack.push('prisma')
+            if (deps.typescript) stack.push('typescript')
+          } catch { /* couldn't parse package.json */ }
+        }
+        if (files.includes('Cargo.toml')) stack.push('rust')
+        if (files.includes('go.mod')) stack.push('go')
+        if (files.some(f => f.endsWith('.xcodeproj') || f.endsWith('.xcworkspace'))) stack.push('swift')
+        if (files.includes('requirements.txt') || files.includes('pyproject.toml')) stack.push('python')
+
+        // Detect CLAUDE.md
+        const claudeMdExists = files.includes('CLAUDE.md')
+
+        // Detect git remote
+        let repoUrl: string | undefined
+        try {
+          repoUrl = execSync('git remote get-url origin', { cwd: local_path, encoding: 'utf8' }).trim()
+        } catch { /* no git remote */ }
+
+        // Get existing project to merge infrastructure
+        const existing = await data.getProject(project_id)
+        if (!existing) return errorResult(`Project ${project_id} not found`)
+
+        // Update project card
+        await data.updateProject(project_id, {
+          local_path,
+          stack,
+          claude_md_exists: claudeMdExists,
+          infrastructure: {
+            ...existing.infrastructure,
+            ...(repoUrl ? { repo_url: repoUrl } : {}),
+          },
+        })
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Registered ${local_path}\nStack: ${stack.join(', ') || 'none detected'}\nCLAUDE.md: ${claudeMdExists}\nRepo: ${repoUrl || 'none'}`,
+          }],
+        }
+      } catch (e: unknown) {
+        return errorResult(`Failed to register project: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+  )
+
+  const provisionProject = tool(
+    'provision_project',
+    'Create a new project directory with git repo and CLAUDE.md stub',
+    {
+      project_id: z.string().describe('ID of existing project to provision'),
+      domain: z.string().describe('Domain slug (fbs, omnissa, personal, shared)'),
+      slug: z.string().describe('Project slug for directory name'),
+      create_github_repo: z.boolean().optional().describe('Create a GitHub repo (default true)'),
+      private_repo: z.boolean().optional().describe('Make GitHub repo private (default true)'),
+    },
+    async (params) => {
+      try {
+        const fs = await import('fs/promises')
+        const nodePath = await import('path')
+        const { execSync } = await import('child_process')
+        const { homedir } = await import('os')
+
+        const { project_id, domain, slug } = params
+        const createRepo = params.create_github_repo !== false
+        const privateRepo = params.private_repo !== false
+
+        // Get project to use name in CLAUDE.md
+        const project = await data.getProject(project_id)
+        if (!project) return errorResult(`Project ${project_id} not found`)
+
+        const projectsRoot = nodePath.join(homedir(), 'Projects')
+        const domainDir = nodePath.join(projectsRoot, domain)
+        const projectDir = nodePath.join(domainDir, slug)
+
+        // Check if directory already exists
+        const existingStat = await fs.stat(projectDir).catch(() => null)
+        if (existingStat) return errorResult(`Directory already exists: ${projectDir}`)
+
+        // Create directory structure
+        await fs.mkdir(projectDir, { recursive: true })
+
+        // Init git
+        execSync('git init', { cwd: projectDir, stdio: 'pipe' })
+
+        // Create CLAUDE.md stub
+        const claudeMd = `# CLAUDE.md — ${project.name}
+
+## Overview
+
+${project.description || 'TODO: Describe this project.'}
+
+## North Star
+
+${project.north_star || 'TODO: Define the north star.'}
+
+## Guardrails
+
+${project.guardrails?.map(g => `- ${g}`).join('\n') || '- TODO: Define guardrails'}
+
+## Build & Test
+
+TODO: Add commands.
+`
+        await fs.writeFile(nodePath.join(projectDir, 'CLAUDE.md'), claudeMd)
+
+        // Initial commit
+        execSync('git add -A && git commit -m "Initial commit with CLAUDE.md"', { cwd: projectDir, stdio: 'pipe' })
+
+        // Create GitHub repo if requested
+        let repoUrl: string | undefined
+        if (createRepo) {
+          try {
+            const visibility = privateRepo ? '--private' : '--public'
+            execSync(`gh repo create ${slug} ${visibility} --source . --push`, { cwd: projectDir, stdio: 'pipe' })
+            repoUrl = execSync('git remote get-url origin', { cwd: projectDir, encoding: 'utf8' }).trim()
+          } catch {
+            // gh CLI not available or auth issue — continue without repo
+          }
+        }
+
+        // Update project card
+        await data.updateProject(project_id, {
+          local_path: projectDir,
+          claude_md_exists: true,
+          stack: [],
+          infrastructure: {
+            ...project.infrastructure,
+            ...(repoUrl ? { repo_url: repoUrl } : {}),
+          },
+        })
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Provisioned ${projectDir}\nGit: initialized\nGitHub: ${repoUrl || 'skipped'}\nCLAUDE.md: created with project context`,
+          }],
+        }
+      } catch (e: unknown) {
+        return errorResult(`Failed to provision project: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+  )
+
+  // ─── Approval Bundle Tools ──────────────────────────────────────────────────
+
+  const createApprovalBundle = tool(
+    'create_approval_bundle',
+    'Create an approval bundle for autonomous project refinement',
+    {
+      project_id: z.string(),
+      domain: z.string(),
+      summary: z.string(),
+      proposed_tasks: z.array(z.object({
+        title: z.string(),
+        description: z.string(),
+        type: z.string(),
+        assignee: z.string(),
+        priority: z.number()
+      })),
+      reasoning: z.string(),
+      expires_at: z.string().optional(),
+      status: z.enum(['pending', 'auto_proceeded']).optional()
+    },
+    async (params) => {
+      try {
+        const bundle = await data.createApprovalBundle({
+          project_id: params.project_id,
+          domain: params.domain,
+          status: params.status || 'pending',
+          summary: params.summary,
+          proposed_tasks: params.proposed_tasks,
+          reasoning: params.reasoning,
+          expires_at: params.expires_at || null,
+          resolved_at: null,
+          resolved_by: null
+        })
+        return { content: [{ type: 'text' as const, text: `Created approval bundle ${bundle.id}\nProject: ${params.project_id}\nTasks proposed: ${params.proposed_tasks.length}\nExpires: ${params.expires_at || 'no expiry (required mode)'}` }] }
+      } catch (e: unknown) {
+        return errorResult(`Failed to create approval bundle: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+  )
+
+  const listApprovalBundles = tool(
+    'list_approval_bundles',
+    'List approval bundles, optionally filtered by project, status, or domain',
+    {
+      project_id: z.string().optional(),
+      status: z.string().optional(),
+      domain: z.string().optional()
+    },
+    async (params) => {
+      try {
+        const bundles = await data.listApprovalBundles(params)
+        if (!bundles.length) return { content: [{ type: 'text' as const, text: 'No approval bundles found.' }] }
+        const lines = bundles.map(b =>
+          `[${b.status}] ${b.id}\n  Project: ${b.project_id}\n  Summary: ${b.summary.slice(0, 200)}\n  Tasks: ${b.proposed_tasks.length}\n  Expires: ${b.expires_at || 'none'}\n  Created: ${b.created_at}`
+        )
+        return { content: [{ type: 'text' as const, text: lines.join('\n\n') }] }
+      } catch (e: unknown) {
+        return errorResult(`Failed to list approval bundles: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+  )
+
+  const resolveApprovalBundle = tool(
+    'resolve_approval_bundle',
+    'Approve, reject, or expire an approval bundle — approved bundles create all proposed tasks',
+    {
+      bundle_id: z.string(),
+      action: z.enum(['approve', 'reject', 'expire']),
+      resolved_by: z.string().optional()
+    },
+    async (params) => {
+      try {
+        const bundles = await data.listApprovalBundles({})
+        const bundle = bundles.find(b => b.id === params.bundle_id)
+        if (!bundle) return errorResult(`Bundle ${params.bundle_id} not found`)
+        if (bundle.status !== 'pending') return errorResult(`Bundle is already ${bundle.status}`)
+
+        const statusMap = { approve: 'approved', reject: 'rejected', expire: 'expired' } as const
+        const now = new Date().toISOString()
+
+        // If approving, create all proposed tasks
+        if (params.action === 'approve') {
+          for (const task of bundle.proposed_tasks) {
+            await data.createTask({
+              title: task.title,
+              description: task.description,
+              task_type: task.type as TaskType,
+              assignee: task.assignee,
+              priority: task.priority,
+              project_id: bundle.project_id,
+              domain: bundle.domain,
+              status: 'todo'
+            })
+          }
+        }
+
+        await data.updateApprovalBundle(params.bundle_id, {
+          status: statusMap[params.action],
+          resolved_at: now,
+          resolved_by: params.resolved_by ?? 'wayne'
+        })
+
+        const actionPast = { approve: 'Approved', reject: 'Rejected', expire: 'Expired' }[params.action]
+        const taskMsg = params.action === 'approve' ? `\n${bundle.proposed_tasks.length} tasks created.` : ''
+        return { content: [{ type: 'text' as const, text: `${actionPast} bundle ${params.bundle_id}.${taskMsg}` }] }
+      } catch (e: unknown) {
+        return errorResult(`Failed to resolve approval bundle: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
   )
@@ -1333,7 +1630,9 @@ export function createInternalToolServer(
     // Tasks
     listTasks, createTask, updateTask, completeTask,
     // Projects
-    listProjects, createProject, updateProject,
+    listProjects, createProject, updateProject, registerProject, provisionProject,
+    // Approval Bundles
+    createApprovalBundle, listApprovalBundles, resolveApprovalBundle,
     // Planning
     getPlanningContext, capturePlanningSummary,
     // Briefings

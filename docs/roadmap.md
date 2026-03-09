@@ -23,12 +23,24 @@ Items ordered by expected build time, lowest to highest.
 | 15 | Multi-agent orchestration | `a7014f2` |
 | 16 | Plugin system | `23f4ab3` |
 
+## ChiefOfStaff iOS Phases
+
+| Phase | Items | Status |
+|-------|-------|--------|
+| 4A | Domain Filtering + Multi-Note Today Tab | Done |
+| 4B | Smart Notes Pipeline (Claude Haiku classification) | Done |
+| 4C | Calendar Integration (Supabase + EventKit dual-source) | Done |
+| 4D | Autonomous Refinement + Project Lifecycle Management | Done |
+
 ## Remaining
 
 | # | Item | Category | Est. Build | Description |
 |---|------|----------|-----------|-------------|
 | 17 | Multi-user support | Platform | ~8 hr | Shared instance with per-user context isolation, auth, and separate memory/task spaces. |
 | 18 | Mobile companion app | Platform | ~20 hr | iOS/Android app for on-the-go interaction, push notifications, quick task capture. |
+| 19 | Push notification infrastructure | iOS | ~4 hr | APNs setup for approval bundle notifications from Trigger.dev. |
+| 20 | Elle calendar sync script | Integration | ~2 hr | Scrape Omnissa calendar from Elle's Mac → upsert to calendar_events table. |
+| 21 | Audio note transcription | Pipeline | ~6 hr | Upload audio → Supabase Storage → Whisper API → classify + route via Smart Notes Pipeline. |
 
 ## Anthropic Harness Compliance
 

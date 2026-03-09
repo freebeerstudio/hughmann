@@ -22,6 +22,9 @@ import { runProactiveChecks } from './proactive.js'
 import { buildTaskPrompt, buildAgentSystemPrompt, selectBestTask, recordTaskResult } from '../runtime/task-executor.js'
 import { SubAgentManager } from '../runtime/sub-agents.js'
 import { createDaemonLogger } from '../util/logger.js'
+import type { Project } from '../types/projects.js'
+import type { Task } from '../types/tasks.js'
+import type { DataAdapter } from '../adapters/data/types.js'
 
 const DAEMON_DIR = join(HUGHMANN_HOME, 'daemon')
 const INBOX_DIR = join(HUGHMANN_HOME, 'inbox')
@@ -119,9 +122,11 @@ export async function startDaemon(): Promise<void> {
   let lastVaultSync = Date.now() // Just synced on boot
   let lastMailCheck = 0
   let lastProactiveCheck = 0
+  let lastRefinementCheck = 0
   const VAULT_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000 // 6 hours
   const MAIL_CHECK_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes
   const PROACTIVE_CHECK_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
+  const REFINEMENT_CHECK_INTERVAL_MS = 60 * 60 * 1000 // 1 hour
 
   // Heartbeat loop
   const heartbeatTimer = setInterval(() => {
@@ -157,6 +162,14 @@ export async function startDaemon(): Promise<void> {
 
       // 4. Process task queue (autonomous task execution with guardrails)
       await processTaskQueue(runtime, stats, guardrailConfig)
+
+      // 5. Check refinement schedule (throttled to once per hour)
+      if (runtime.data && Date.now() - lastRefinementCheck > REFINEMENT_CHECK_INTERVAL_MS) {
+        lastRefinementCheck = Date.now()
+        checkRefinementSchedule(runtime, runtime.data, logger).catch(err => {
+          log(`Refinement check error: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      }
 
       // Periodic mail check (7am-6pm only)
       const hour = new Date().getHours()
@@ -712,6 +725,47 @@ async function processTaskQueue(
     try { runtime.setDomain(task.domain) } catch { /* proceed */ }
   }
 
+  // Check if task's project has a local_path for Claude Code dispatch
+  if (task.project_id) {
+    const project = await runtime.data.getProject(task.project_id)
+    if (project?.local_path) {
+      log(`[TaskQueue] Claude Code dispatch: "${task.title}" → ${project.slug}`)
+      const ccResult = await executeViaClaudeCode(task, project)
+      const summary = ccResult.output.length > 500 ? ccResult.output.slice(0, 500) + '...' : ccResult.output
+
+      if (ccResult.success) {
+        await recordTaskResult(task, { success: true, summary, durationMs: Date.now() - taskStartTime }, runtime.data)
+        recordSuccess(stats)
+        saveStats(DAEMON_DIR, stats)
+        log(`[TaskQueue] Claude Code completed: "${task.title}" — ${getStatsSummary(stats)}`)
+      } else {
+        await recordTaskResult(task, { success: false, summary: '', durationMs: Date.now() - taskStartTime, error: ccResult.output }, runtime.data)
+        recordFailure(stats)
+        saveStats(DAEMON_DIR, stats)
+        log(`[TaskQueue] Claude Code failed: "${task.title}" — ${ccResult.output.slice(0, 200)}`)
+      }
+
+      appendProgress(DAEMON_DIR, {
+        taskId: task.id,
+        title: task.title,
+        status: ccResult.success ? 'completed' : 'failed',
+        timestamp: new Date().toISOString(),
+        durationMs: Date.now() - taskStartTime,
+        summary: ccResult.success ? summary : undefined,
+        error: ccResult.success ? undefined : ccResult.output.slice(0, 500),
+        domain: task.domain ?? undefined,
+        project: task.project_id ?? undefined,
+      })
+      logResult(`task-${task.id.slice(0, 8)}`, `# ${task.title} (Claude Code)\n\n${ccResult.output}`)
+
+      // Restore domain and return
+      if (task.domain && prevDomain !== runtime.activeDomain) {
+        runtime.setDomain(prevDomain)
+      }
+      return
+    }
+  }
+
   // Build task prompt with project context and memories (shared module)
   const prompt = await buildTaskPrompt(
     task,
@@ -794,6 +848,82 @@ async function processTaskQueue(
   // Restore domain
   if (task.domain && prevDomain !== runtime.activeDomain) {
     runtime.setDomain(prevDomain)
+  }
+}
+
+/** Check if any active projects are overdue for refinement and create tasks */
+async function checkRefinementSchedule(runtime: Runtime, data: DataAdapter, _logger: typeof logger): Promise<void> {
+  try {
+    const projects = await data.listProjects({ status: 'active' })
+    const now = new Date()
+
+    for (const project of projects) {
+      // Skip if never refined (needs initial manual refinement)
+      if (!project.last_refinement_at) continue
+
+      const lastRefine = new Date(project.last_refinement_at)
+      const cadenceDays: Record<string, number> = { weekly: 7, biweekly: 14, monthly: 30 }
+      const days = cadenceDays[project.refinement_cadence] || 14
+      const nextDue = new Date(lastRefine.getTime() + days * 86400000)
+
+      if (now < nextDue) continue  // Not yet due
+
+      // Check for existing pending bundle
+      const bundles = await data.listApprovalBundles({ project_id: project.id, status: 'pending' })
+      if (bundles.length > 0) continue  // Already has pending work
+
+      log(`[Refinement] Auto-refine due for ${project.slug} (last: ${project.last_refinement_at})`)
+
+      // Create a task to run auto-refine for this project
+      await data.createTask({
+        title: `Auto-refine: ${project.name}`,
+        description: `Run auto-refine skill for project ${project.name} (${project.slug}). Refinement is overdue — last refined ${project.last_refinement_at}. Review pyramid, propose sprint tasks, create approval bundle.`,
+        domain: project.domain,
+        project_id: project.id,
+        status: 'todo',
+        priority: 3,
+        task_type: 'standard',
+        assignee: runtime.context?.config.systemName?.toLowerCase() ?? 'hugh',
+      })
+    }
+  } catch (e) {
+    log(`[Refinement] checkRefinementSchedule error: ${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
+/** Execute a task via the Claude CLI in a project's local directory */
+async function executeViaClaudeCode(
+  task: Task,
+  project: Project,
+): Promise<{ success: boolean; output: string }> {
+  const { execSync } = await import('node:child_process')
+
+  const prompt = [
+    `You are working on project "${project.name}".`,
+    project.north_star ? `North Star: ${project.north_star}` : '',
+    project.guardrails?.length ? `Guardrails: ${project.guardrails.join('; ')}` : '',
+    '',
+    `Task: ${task.title}`,
+    task.description || '',
+    '',
+    'Work in a git worktree if making code changes. Create a branch, commit your work, and create a PR if changes are non-trivial. Do not push directly to main.',
+  ].filter(Boolean).join('\n')
+
+  try {
+    const output = execSync(
+      `echo ${JSON.stringify(prompt)} | claude --print --dangerously-skip-permissions --model claude-opus-4-6`,
+      {
+        cwd: project.local_path!,
+        encoding: 'utf8',
+        timeout: 300000,  // 5 minute timeout
+        maxBuffer: 10 * 1024 * 1024,  // 10MB
+      },
+    )
+    return { success: true, output: output.slice(0, 4000) }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    log(`[TaskQueue] Claude Code dispatch failed: "${task.title}" — ${msg.slice(0, 200)}`)
+    return { success: false, output: msg.slice(0, 2000) }
   }
 }
 

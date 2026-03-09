@@ -3,6 +3,7 @@
  */
 
 export type ProjectStatus = 'planning' | 'incubator' | 'active' | 'paused' | 'completed' | 'archived'
+export type ApprovalMode = 'required' | 'auto_proceed' | 'notify_only'
 
 export interface Project {
   id: string
@@ -24,6 +25,10 @@ export interface Project {
   }
   refinement_cadence: 'weekly' | 'biweekly' | 'monthly'
   last_refinement_at: string | null
+  approval_mode: ApprovalMode
+  local_path: string | null
+  stack: string[]
+  claude_md_exists: boolean
   created_at: string
   updated_at: string
 }
@@ -49,6 +54,10 @@ export interface CreateProjectInput {
   infrastructure?: Project['infrastructure']
   refinement_cadence?: 'weekly' | 'biweekly' | 'monthly'
   domain_goal_id?: string
+  approval_mode?: ApprovalMode
+  local_path?: string
+  stack?: string[]
+  claude_md_exists?: boolean
 }
 
 export interface UpdateProjectInput {
@@ -63,12 +72,44 @@ export interface UpdateProjectInput {
   refinement_cadence?: 'weekly' | 'biweekly' | 'monthly'
   last_refinement_at?: string
   domain_goal_id?: string
+  approval_mode?: ApprovalMode
+  local_path?: string
+  stack?: string[]
+  claude_md_exists?: boolean
 }
 
 export interface ProjectFilters {
   domain?: string
   status?: ProjectStatus | ProjectStatus[]
   limit?: number
+}
+
+export interface ProposedTask {
+  title: string
+  description: string
+  type: string
+  assignee: string
+  priority: number
+}
+
+export interface ApprovalBundle {
+  id: string
+  project_id: string
+  domain: string
+  status: 'pending' | 'approved' | 'rejected' | 'expired' | 'auto_proceeded'
+  summary: string
+  proposed_tasks: ProposedTask[]
+  reasoning: string
+  expires_at: string | null
+  resolved_at: string | null
+  resolved_by: string | null
+  created_at: string
+}
+
+export interface ApprovalBundleFilters {
+  project_id?: string
+  status?: string
+  domain?: string
 }
 
 export interface PlanningSessionRecord {

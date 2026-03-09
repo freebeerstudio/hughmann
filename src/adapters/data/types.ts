@@ -1,5 +1,5 @@
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal, ApprovalBundle, ApprovalBundleFilters } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
 import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
@@ -150,6 +150,12 @@ export interface DataAdapter {
   updateProject(id: string, input: UpdateProjectInput): Promise<Project | null>
   getProject(id: string): Promise<Project | null>
   getProjectBySlug(slug: string): Promise<Project | null>
+
+  // ─── Approval Bundles ──────────────────────────────────────────────────
+
+  createApprovalBundle(input: Omit<ApprovalBundle, 'id' | 'created_at'>): Promise<ApprovalBundle>
+  listApprovalBundles(filters?: ApprovalBundleFilters): Promise<ApprovalBundle[]>
+  updateApprovalBundle(id: string, input: { status: string; resolved_at?: string; resolved_by?: string }): Promise<ApprovalBundle | null>
 
   // ─── Planning Sessions ─────────────────────────────────────────────────
 

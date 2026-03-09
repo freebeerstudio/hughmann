@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { randomUUID } from 'node:crypto'
 import type { DataAdapter, CalendarEvent } from './types.js'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal, ApprovalBundle, ApprovalBundleFilters } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
 import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
@@ -496,6 +496,10 @@ export class SupabaseAdapter implements DataAdapter {
       infrastructure: input.infrastructure ?? {},
       refinement_cadence: input.refinement_cadence ?? 'weekly',
       last_refinement_at: null,
+      approval_mode: input.approval_mode ?? 'required',
+      local_path: input.local_path ?? null,
+      stack: input.stack ?? [],
+      claude_md_exists: input.claude_md_exists ?? false,
       created_at: now,
       updated_at: now,
     }
@@ -539,6 +543,39 @@ export class SupabaseAdapter implements DataAdapter {
       .single()
 
     return data ? parseProject(data) : null
+  }
+
+  // ─── Approval Bundles ──────────────────────────────────────────────────
+
+  async createApprovalBundle(input: Omit<ApprovalBundle, 'id' | 'created_at'>): Promise<ApprovalBundle> {
+    const { data, error } = await this.client
+      .from('approval_bundles')
+      .insert(input)
+      .select()
+      .single()
+    if (error) throw error
+    return data as ApprovalBundle
+  }
+
+  async listApprovalBundles(filters?: ApprovalBundleFilters): Promise<ApprovalBundle[]> {
+    let query = this.client.from('approval_bundles').select('*').order('created_at', { ascending: false })
+    if (filters?.project_id) query = query.eq('project_id', filters.project_id)
+    if (filters?.status) query = query.eq('status', filters.status)
+    if (filters?.domain) query = query.eq('domain', filters.domain)
+    const { data, error } = await query
+    if (error) throw error
+    return (data || []) as ApprovalBundle[]
+  }
+
+  async updateApprovalBundle(id: string, input: { status: string; resolved_at?: string; resolved_by?: string }): Promise<ApprovalBundle | null> {
+    const { data, error } = await this.client
+      .from('approval_bundles')
+      .update(input)
+      .eq('id', id)
+      .select()
+      .single()
+    if (error) throw error
+    return data as ApprovalBundle
   }
 
   // ─── Domain Goals ──────────────────────────────────────────────────────
@@ -975,6 +1012,10 @@ function parseProject(row: Record<string, unknown>): Project {
     infrastructure: (row.infrastructure && typeof row.infrastructure === 'object') ? row.infrastructure as Project['infrastructure'] : {},
     refinement_cadence: (row.refinement_cadence as Project['refinement_cadence']) ?? 'weekly',
     last_refinement_at: row.last_refinement_at != null ? String(row.last_refinement_at) : null,
+    approval_mode: (row.approval_mode as Project['approval_mode']) ?? 'required',
+    local_path: row.local_path != null ? String(row.local_path) : null,
+    stack: Array.isArray(row.stack) ? row.stack as string[] : [],
+    claude_md_exists: Boolean(row.claude_md_exists),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   }

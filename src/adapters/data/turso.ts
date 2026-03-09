@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { DataAdapter, CalendarEvent } from './types.js'
 import { cosineSimilarity } from '../../util/math.js'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, ProjectStatus, DomainGoal } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, ProjectStatus, DomainGoal, ApprovalBundle, ApprovalBundleFilters } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
 import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
@@ -84,12 +84,32 @@ const SCHEMA_STATEMENTS = [
     infrastructure TEXT NOT NULL DEFAULT '{}',
     refinement_cadence TEXT DEFAULT 'weekly' CHECK (refinement_cadence IN ('weekly', 'biweekly', 'monthly')),
     last_refinement_at TEXT,
+    approval_mode TEXT NOT NULL DEFAULT 'required' CHECK (approval_mode IN ('required', 'auto_proceed', 'notify_only')),
+    local_path TEXT,
+    stack TEXT NOT NULL DEFAULT '[]',
+    claude_md_exists INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_projects_domain ON projects (domain)`,
   `CREATE INDEX IF NOT EXISTS idx_projects_status ON projects (status)`,
   `CREATE INDEX IF NOT EXISTS idx_projects_slug ON projects (slug)`,
+
+  `CREATE TABLE IF NOT EXISTS approval_bundles (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    summary TEXT NOT NULL,
+    proposed_tasks TEXT NOT NULL DEFAULT '[]',
+    reasoning TEXT NOT NULL,
+    expires_at TEXT,
+    resolved_at TEXT,
+    resolved_by TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_approval_bundles_project ON approval_bundles (project_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_approval_bundles_status ON approval_bundles (status)`,
 
   `CREATE TABLE IF NOT EXISTS planning_sessions (
     id TEXT PRIMARY KEY,
@@ -688,18 +708,24 @@ export class TursoAdapter implements DataAdapter {
       infrastructure: input.infrastructure ?? {},
       refinement_cadence: input.refinement_cadence ?? 'weekly',
       last_refinement_at: null,
+      approval_mode: input.approval_mode ?? 'required',
+      local_path: input.local_path ?? null,
+      stack: input.stack ?? [],
+      claude_md_exists: input.claude_md_exists ?? false,
       created_at: now,
       updated_at: now,
     }
 
     await this.client.execute({
-      sql: `INSERT INTO projects (id, name, slug, description, domain, status, priority, domain_goal_id, north_star, guardrails, infrastructure, refinement_cadence, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO projects (id, name, slug, description, domain, status, priority, domain_goal_id, north_star, guardrails, infrastructure, refinement_cadence, approval_mode, local_path, stack, claude_md_exists, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         project.id, project.name, project.slug, project.description, project.domain,
         project.status, project.priority, project.domain_goal_id,
         project.north_star, JSON.stringify(project.guardrails),
         JSON.stringify(project.infrastructure), project.refinement_cadence,
+        project.approval_mode, project.local_path,
+        JSON.stringify(project.stack), project.claude_md_exists ? 1 : 0,
         project.created_at, project.updated_at,
       ],
     })
@@ -714,9 +740,12 @@ export class TursoAdapter implements DataAdapter {
     const params: unknown[] = []
 
     for (const [key, value] of Object.entries(input)) {
-      if (['guardrails', 'infrastructure'].includes(key)) {
+      if (['guardrails', 'infrastructure', 'stack'].includes(key)) {
         sets.push(`${key} = ?`)
         params.push(JSON.stringify(value))
+      } else if (key === 'claude_md_exists') {
+        sets.push(`${key} = ?`)
+        params.push(value ? 1 : 0)
       } else {
         sets.push(`${key} = ?`)
         params.push(value ?? null)
@@ -759,6 +788,85 @@ export class TursoAdapter implements DataAdapter {
 
     if (result.rows.length === 0) return null
     return parseTursoProject(result.rows[0])
+  }
+
+  // ─── Approval Bundles ──────────────────────────────────────────────────
+
+  async createApprovalBundle(input: Omit<ApprovalBundle, 'id' | 'created_at'>): Promise<ApprovalBundle> {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+
+    await this.client.execute({
+      sql: `INSERT INTO approval_bundles (id, project_id, domain, status, summary, proposed_tasks, reasoning, expires_at, resolved_at, resolved_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        id, input.project_id, input.domain, input.status, input.summary,
+        JSON.stringify(input.proposed_tasks), input.reasoning,
+        input.expires_at ?? null, input.resolved_at ?? null, input.resolved_by ?? null, now,
+      ],
+    })
+
+    return {
+      id,
+      ...input,
+      created_at: now,
+    }
+  }
+
+  async listApprovalBundles(filters?: ApprovalBundleFilters): Promise<ApprovalBundle[]> {
+    const conditions: string[] = []
+    const params: (string | number | null)[] = []
+
+    if (filters?.project_id) {
+      conditions.push('project_id = ?')
+      params.push(filters.project_id)
+    }
+    if (filters?.status) {
+      conditions.push('status = ?')
+      params.push(filters.status)
+    }
+    if (filters?.domain) {
+      conditions.push('domain = ?')
+      params.push(filters.domain)
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+    const result = await this.client.execute({
+      sql: `SELECT * FROM approval_bundles ${where} ORDER BY created_at DESC`,
+      args: params,
+    })
+
+    return result.rows.map(parseTursoApprovalBundle)
+  }
+
+  async updateApprovalBundle(id: string, input: { status: string; resolved_at?: string; resolved_by?: string }): Promise<ApprovalBundle | null> {
+    const sets: string[] = ['status = ?']
+    const params: (string | number | null)[] = [input.status]
+
+    if (input.resolved_at !== undefined) {
+      sets.push('resolved_at = ?')
+      params.push(input.resolved_at ?? null)
+    }
+    if (input.resolved_by !== undefined) {
+      sets.push('resolved_by = ?')
+      params.push(input.resolved_by ?? null)
+    }
+
+    params.push(id)
+
+    await this.client.execute({
+      sql: `UPDATE approval_bundles SET ${sets.join(', ')} WHERE id = ?`,
+      args: params,
+    })
+
+    const result = await this.client.execute({
+      sql: 'SELECT * FROM approval_bundles WHERE id = ?',
+      args: [id],
+    })
+
+    if (result.rows.length === 0) return null
+    return parseTursoApprovalBundle(result.rows[0])
   }
 
   // ─── Domain Goals ──────────────────────────────────────────────────────
@@ -1400,6 +1508,22 @@ function parseTursoTask(row: Record<string, unknown>): Task {
   }
 }
 
+function parseTursoApprovalBundle(row: Record<string, unknown>): ApprovalBundle {
+  return {
+    id: String(row.id),
+    project_id: String(row.project_id),
+    domain: String(row.domain),
+    status: String(row.status) as ApprovalBundle['status'],
+    summary: String(row.summary),
+    proposed_tasks: JSON.parse(String(row.proposed_tasks ?? '[]')),
+    reasoning: String(row.reasoning),
+    expires_at: row.expires_at != null ? String(row.expires_at) : null,
+    resolved_at: row.resolved_at != null ? String(row.resolved_at) : null,
+    resolved_by: row.resolved_by != null ? String(row.resolved_by) : null,
+    created_at: String(row.created_at),
+  }
+}
+
 function parseTursoProject(row: Record<string, unknown>): Project {
   return {
     id: String(row.id),
@@ -1415,6 +1539,10 @@ function parseTursoProject(row: Record<string, unknown>): Project {
     infrastructure: JSON.parse(String(row.infrastructure ?? '{}')),
     refinement_cadence: (row.refinement_cadence as Project['refinement_cadence']) ?? 'weekly',
     last_refinement_at: row.last_refinement_at != null ? String(row.last_refinement_at) : null,
+    approval_mode: (row.approval_mode as Project['approval_mode']) ?? 'required',
+    local_path: row.local_path != null ? String(row.local_path) : null,
+    stack: JSON.parse(String(row.stack ?? '[]')),
+    claude_md_exists: Boolean(row.claude_md_exists),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   }
