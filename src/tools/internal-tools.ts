@@ -15,6 +15,7 @@ import type { ProjectStatus } from '../types/projects.js'
 import type { ContentStatus, ContentPlatform, ContentSourceType } from '../types/content.js'
 import { MCP_REGISTRY, findMatchingServers } from '../runtime/mcp-registry.js'
 import { addMcpServer, removeMcpServer } from '../runtime/mcp-config.js'
+import { domainToCustomerId, OWNER_USER_ID } from '../util/domain.js'
 
 /** Helper to create an error tool response instead of throwing */
 function errorResult(message: string) {
@@ -48,6 +49,29 @@ function truncatedJson(data: unknown, maxLength = 8000): string {
   const json = JSON.stringify(data, null, 2)
   if (json.length <= maxLength) return json
   return json.slice(0, maxLength) + '\n\n... [truncated]'
+}
+
+/** Fire a push notification to the Supabase push-notifications edge function. Best-effort. */
+async function sendPushNotification(payload: {
+  user_id: string
+  customer_id: string
+  category: string
+  title: string
+  body?: string
+  data?: Record<string, unknown>
+}): Promise<void> {
+  const supabaseUrl = process.env.SUPABASE_URL
+  const serviceKey = process.env.SUPABASE_KEY
+  if (!supabaseUrl || !serviceKey) return
+
+  await fetch(`${supabaseUrl}/functions/v1/push-notifications`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${serviceKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ action: 'send', ...payload }),
+  })
 }
 
 export function createInternalToolServer(
@@ -534,6 +558,19 @@ TODO: Add commands.
           resolved_at: null,
           resolved_by: null
         })
+
+        // Best-effort push notification — never block on delivery
+        const project = await data.getProject(params.project_id).catch(() => null)
+        const projectName = project?.name || params.project_id
+        sendPushNotification({
+          user_id: OWNER_USER_ID,
+          customer_id: domainToCustomerId(params.domain),
+          category: 'approval_request',
+          title: 'Approval Request',
+          body: `${projectName}: ${params.summary}`.slice(0, 200),
+          data: { bundle_id: bundle.id },
+        }).catch(() => {})
+
         return { content: [{ type: 'text' as const, text: `Created approval bundle ${bundle.id}\nProject: ${params.project_id}\nTasks proposed: ${params.proposed_tasks.length}\nExpires: ${params.expires_at || 'no expiry (required mode)'}` }] }
       } catch (e: unknown) {
         return errorResult(`Failed to create approval bundle: ${e instanceof Error ? e.message : String(e)}`)

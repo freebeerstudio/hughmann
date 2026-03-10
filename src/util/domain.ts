@@ -12,6 +12,9 @@ const CUSTOMER_IDS: Record<string, string> = {
   personal: 'fc64558e-2740-4005-883f-53388b7edad7',
 }
 
+/** Supabase Auth user ID for the owner (used for push notifications, etc.) */
+export const OWNER_USER_ID = process.env.OWNER_USER_ID || 'ee2a626f-9e23-490c-a561-31a805e1b4d1'
+
 export function domainToCustomerId(domain: string | null): string {
   if (!domain) return CUSTOMER_IDS.personal
   return CUSTOMER_IDS[domain.toLowerCase()] ?? CUSTOMER_IDS.personal

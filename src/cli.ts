@@ -226,6 +226,11 @@ switch (flags.command) {
     break
   }
 
+  case 'projects': {
+    await manageProjects(flags)
+    break
+  }
+
   case 'trigger': {
     await manageTrigger(flags)
     break
@@ -1360,6 +1365,61 @@ async function manageTasks(flags: CliFlags) {
   }
 }
 
+// ─── Projects ───────────────────────────────────────────────────────────────
+
+async function manageProjects(flags: CliFlags) {
+  const subcommand = flags.args[0] ?? 'list'
+
+  switch (subcommand) {
+    case 'migrate': {
+      const runtime = await bootRuntime({ quiet: true })
+      if (!runtime.data) {
+        console.error(`  ${pc.red('\u2717')} No data adapter configured. Projects require a database.`)
+        process.exit(1)
+      }
+      const { migrateProjects } = await import('./scripts/migrate-projects.js')
+      const useSymlink = flags.args.includes('--symlink')
+      const isLive = flags.args.includes('--live') || useSymlink
+      const dryRun = !isLive
+      await migrateProjects(runtime.data, { dryRun, useSymlink })
+      break
+    }
+
+    case 'list': {
+      const runtime = await bootRuntime({ quiet: true })
+      if (!runtime.data) {
+        console.error(`  ${pc.red('\u2717')} No data adapter configured. Projects require a database.`)
+        process.exit(1)
+      }
+      const projects = await runtime.data.listProjects()
+      if (projects.length === 0) {
+        console.log(`  ${pc.dim('No projects found.')}`)
+        return
+      }
+      console.log()
+      for (const p of projects) {
+        const status = p.status === 'active' ? pc.green(p.status)
+          : p.status === 'paused' ? pc.yellow(p.status)
+          : pc.dim(p.status)
+        const path = p.local_path ? pc.dim(p.local_path) : pc.red('no path')
+        console.log(`  ${pc.bold(p.name)} ${pc.dim(`(${p.domain}/${p.slug})`)} ${status} ${path}`)
+      }
+      console.log()
+      break
+    }
+
+    default: {
+      console.log(`  ${pc.bold('Usage')}: hughmann projects [list|migrate]`)
+      console.log()
+      console.log(`    ${pc.cyan('list')}                     Show all projects ${pc.dim('(default)')}`)
+      console.log(`    ${pc.cyan('migrate')}                  Dry run: show what would be migrated`)
+      console.log(`    ${pc.cyan('migrate --live')}           Move projects to ~/Projects/{domain}/{slug}/`)
+      console.log(`    ${pc.cyan('migrate --symlink')}        Symlink instead of move (implies --live)`)
+      console.log()
+    }
+  }
+}
+
 // ─── Usage ──────────────────────────────────────────────────────────────────
 
 function showUsage() {
@@ -1375,6 +1435,7 @@ function showUsage() {
   console.log(`    ${pc.cyan('domains')}           List configured domains`)
   console.log(`    ${pc.cyan('focus')}             Strategic planning session ${pc.dim('(15-min collaborative planning)')}`)
   console.log(`    ${pc.cyan('tasks')}             Manage task queue ${pc.dim('(list|create|done|backlog|blocked)')}`)
+  console.log(`    ${pc.cyan('projects')}          Manage projects ${pc.dim('(list|migrate)')}`)
   console.log(`    ${pc.cyan('mail')}              Process Elle mailbox emails ${pc.dim('(process|status)')}`)
   console.log(`    ${pc.cyan('gmail')}             Gmail classification ${pc.dim('(classify|discover)')}`)
   console.log(`    ${pc.cyan('calendar')}          Apple Calendar events ${pc.dim('(tomorrow)')}`)
