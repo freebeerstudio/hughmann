@@ -167,7 +167,11 @@ export interface DataAdapter {
 
   listDomainGoals(domain?: string): Promise<DomainGoal[]>
   getDomainGoal(id: string): Promise<DomainGoal | null>
-  updateDomainGoal(id: string, statement: string): Promise<DomainGoal | null>
+  updateDomainGoal(id: string, updates: {
+    statement?: string
+    current_state?: string
+    state_updates?: import('../../types/projects.js').StateUpdate[]
+  }): Promise<DomainGoal | null>
 
   // ─── Briefings ─────────────────────────────────────────────────────────
 

@@ -6,7 +6,7 @@ import type { DataAdapter, CalendarEvent } from './types.js'
 import { cosineSimilarity } from '../../util/math.js'
 import * as sqliteVec from 'sqlite-vec'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal, ApprovalBundle, ApprovalBundleFilters } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal, ApprovalBundle, ApprovalBundleFilters, StateUpdate } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
 import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
@@ -233,6 +233,8 @@ CREATE TABLE IF NOT EXISTS domain_goals (
   id TEXT PRIMARY KEY,
   domain TEXT NOT NULL,
   statement TEXT NOT NULL,
+  current_state TEXT,
+  state_updates TEXT DEFAULT '[]',
   reviewed_at TEXT NOT NULL DEFAULT (datetime('now')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -968,22 +970,60 @@ export class SQLiteAdapter implements DataAdapter {
   // ─── Domain Goals ──────────────────────────────────────────────────────
 
   async listDomainGoals(domain?: string): Promise<DomainGoal[]> {
-    if (domain) {
-      const rows = this.db.prepare('SELECT * FROM domain_goals WHERE domain = ? ORDER BY domain').all(domain) as DomainGoal[]
-      return rows
-    }
-    const rows = this.db.prepare('SELECT * FROM domain_goals ORDER BY domain').all() as DomainGoal[]
-    return rows
+    const rows = domain
+      ? this.db.prepare('SELECT * FROM domain_goals WHERE domain = ? ORDER BY domain').all(domain) as Record<string, unknown>[]
+      : this.db.prepare('SELECT * FROM domain_goals ORDER BY domain').all() as Record<string, unknown>[]
+    return rows.map(row => ({
+      id: String(row.id),
+      domain: String(row.domain),
+      statement: String(row.statement),
+      current_state: row.current_state ? String(row.current_state) : null,
+      state_updates: row.state_updates ? JSON.parse(String(row.state_updates)) : [],
+      reviewed_at: String(row.reviewed_at),
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at),
+    }))
   }
 
   async getDomainGoal(id: string): Promise<DomainGoal | null> {
-    const row = this.db.prepare('SELECT * FROM domain_goals WHERE id = ?').get(id) as DomainGoal | undefined
-    return row ?? null
+    const row = this.db.prepare('SELECT * FROM domain_goals WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    if (!row) return null
+    return {
+      id: String(row.id),
+      domain: String(row.domain),
+      statement: String(row.statement),
+      current_state: row.current_state ? String(row.current_state) : null,
+      state_updates: row.state_updates ? JSON.parse(String(row.state_updates)) : [],
+      reviewed_at: String(row.reviewed_at),
+      created_at: String(row.created_at),
+      updated_at: String(row.updated_at),
+    }
   }
 
-  async updateDomainGoal(id: string, statement: string): Promise<DomainGoal | null> {
+  async updateDomainGoal(id: string, updates: {
+    statement?: string
+    current_state?: string
+    state_updates?: StateUpdate[]
+  }): Promise<DomainGoal | null> {
     const now = new Date().toISOString()
-    this.db.prepare('UPDATE domain_goals SET statement = ?, reviewed_at = ?, updated_at = ? WHERE id = ?').run(statement, now, now, id)
+    const sets: string[] = ['reviewed_at = ?', 'updated_at = ?']
+    const params: unknown[] = [now, now]
+
+    if (updates.statement !== undefined) {
+      sets.push('statement = ?')
+      params.push(updates.statement)
+    }
+    if (updates.current_state !== undefined) {
+      sets.push('current_state = ?')
+      params.push(updates.current_state)
+    }
+    if (updates.state_updates !== undefined) {
+      sets.push('state_updates = ?')
+      params.push(JSON.stringify(updates.state_updates))
+    }
+
+    params.push(id)
+    this.db.prepare(`UPDATE domain_goals SET ${sets.join(', ')} WHERE id = ?`).run(...params)
     return this.getDomainGoal(id)
   }
 

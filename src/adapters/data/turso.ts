@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { DataAdapter, CalendarEvent } from './types.js'
 import { cosineSimilarity } from '../../util/math.js'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, ProjectStatus, DomainGoal, ApprovalBundle, ApprovalBundleFilters } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, ProjectStatus, DomainGoal, ApprovalBundle, ApprovalBundleFilters, StateUpdate } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
 import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
@@ -195,6 +195,8 @@ const SCHEMA_STATEMENTS = [
     id TEXT PRIMARY KEY,
     domain TEXT NOT NULL,
     statement TEXT NOT NULL,
+    current_state TEXT,
+    state_updates TEXT DEFAULT '[]',
     reviewed_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -888,6 +890,8 @@ export class TursoAdapter implements DataAdapter {
       id: String(row.id),
       domain: String(row.domain),
       statement: String(row.statement),
+      current_state: row.current_state ? String(row.current_state) : null,
+      state_updates: row.state_updates ? JSON.parse(String(row.state_updates)) : [],
       reviewed_at: String(row.reviewed_at),
       created_at: String(row.created_at),
       updated_at: String(row.updated_at),
@@ -908,19 +912,42 @@ export class TursoAdapter implements DataAdapter {
       id: String(row.id),
       domain: String(row.domain),
       statement: String(row.statement),
+      current_state: row.current_state ? String(row.current_state) : null,
+      state_updates: row.state_updates ? JSON.parse(String(row.state_updates)) : [],
       reviewed_at: String(row.reviewed_at),
       created_at: String(row.created_at),
       updated_at: String(row.updated_at),
     }
   }
 
-  async updateDomainGoal(id: string, statement: string): Promise<DomainGoal | null> {
+  async updateDomainGoal(id: string, updates: {
+    statement?: string
+    current_state?: string
+    state_updates?: StateUpdate[]
+  }): Promise<DomainGoal | null> {
     if (!this.ready) return null
 
     const now = new Date().toISOString()
+    const sets: string[] = ['reviewed_at = ?', 'updated_at = ?']
+    const params: (string | null)[] = [now, now]
+
+    if (updates.statement !== undefined) {
+      sets.push('statement = ?')
+      params.push(updates.statement)
+    }
+    if (updates.current_state !== undefined) {
+      sets.push('current_state = ?')
+      params.push(updates.current_state)
+    }
+    if (updates.state_updates !== undefined) {
+      sets.push('state_updates = ?')
+      params.push(JSON.stringify(updates.state_updates))
+    }
+
+    params.push(id)
     await this.client.execute({
-      sql: 'UPDATE domain_goals SET statement = ?, reviewed_at = ?, updated_at = ? WHERE id = ?',
-      args: [statement, now, now, id],
+      sql: `UPDATE domain_goals SET ${sets.join(', ')} WHERE id = ?`,
+      args: params,
     })
 
     return this.getDomainGoal(id)

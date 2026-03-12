@@ -763,6 +763,9 @@ TODO: Add commands.
             briefing.push(`## Domain Goals (${domainGoals.length})`)
             for (const g of domainGoals) {
               briefing.push(`- **${g.domain}**: ${g.statement} (reviewed: ${g.reviewed_at.split('T')[0]})`)
+              if (g.current_state) {
+                briefing.push(`  Current state: ${g.current_state}`)
+              }
             }
           }
         } catch {
@@ -1087,19 +1090,33 @@ TODO: Add commands.
 
   const updateDomainGoal = tool(
     'update_domain_goal',
-    'Update the statement of a domain goal. Use this to refine or change the strategic direction for a domain.',
+    'Update a domain goal. Can change the statement, set the current progress state, and append state update entries. Use current_state to track where the domain is now relative to its north star. Use state_updates to record the full audit trail of state changes (pass the complete array including previous entries plus new ones).',
     {
       id: z.string().describe('UUID of the domain goal to update'),
-      statement: z.string().describe('The new goal statement'),
+      statement: z.string().optional().describe('New goal statement (only if changing the north star direction)'),
+      current_state: z.string().optional().describe('Updated summary of where the domain is right now relative to its north star'),
+      state_updates: z.array(z.object({
+        date: z.string().describe('ISO date string (YYYY-MM-DD)'),
+        projectId: z.string().describe('UUID of the completed project'),
+        projectName: z.string().describe('Name of the completed project'),
+        summary: z.string().describe('What was accomplished'),
+        previousState: z.string().nullable().describe('Previous current_state before this update'),
+        newState: z.string().describe('New current_state after this update'),
+      })).optional().describe('Complete state update audit trail array (append new entry to existing array)'),
     },
     async (args) => {
       try {
-        const goal = await data.updateDomainGoal(args.id, args.statement)
-        if (!goal) return errorResult(`Domain goal not found: ${args.id}`)
+        const { id, ...rest } = args
+        const updates = stripUndefined(rest) as Parameters<typeof data.updateDomainGoal>[1]
+        const goal = await data.updateDomainGoal(id, updates)
+        if (!goal) return errorResult(`Domain goal not found: ${id}`)
         return {
           content: [{
             type: 'text' as const,
-            text: `Updated domain goal for "${goal.domain}": ${goal.statement}`,
+            text: `Updated domain goal for "${goal.domain}":\n` +
+              `Statement: ${goal.statement}\n` +
+              (goal.current_state ? `Current State: ${goal.current_state}\n` : '') +
+              (goal.state_updates.length > 0 ? `State Updates: ${goal.state_updates.length} entries` : ''),
           }],
         }
       } catch (err) {

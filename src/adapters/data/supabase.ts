@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { randomUUID } from 'node:crypto'
 import type { DataAdapter, CalendarEvent } from './types.js'
 import type { Task, TaskFilters, CreateTaskInput, UpdateTaskInput } from '../../types/tasks.js'
-import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal, ApprovalBundle, ApprovalBundleFilters } from '../../types/projects.js'
+import type { Project, ProjectFilters, CreateProjectInput, UpdateProjectInput, PlanningSessionRecord, DomainGoal, ApprovalBundle, ApprovalBundleFilters, StateUpdate } from '../../types/projects.js'
 import type { Advisor } from '../../types/advisors.js'
 import type { ContentPiece, Topic, ContentSource, ContentStatus, ContentPlatform, ContentSourceType } from '../../types/content.js'
 
@@ -608,13 +608,22 @@ export class SupabaseAdapter implements DataAdapter {
     return (data as DomainGoal) ?? null
   }
 
-  async updateDomainGoal(id: string, statement: string): Promise<DomainGoal | null> {
+  async updateDomainGoal(id: string, updates: {
+    statement?: string
+    current_state?: string
+    state_updates?: StateUpdate[]
+  }): Promise<DomainGoal | null> {
     if (!this.ready) return null
 
     const now = new Date().toISOString()
+    const patch: Record<string, unknown> = { reviewed_at: now, updated_at: now }
+    if (updates.statement !== undefined) patch.statement = updates.statement
+    if (updates.current_state !== undefined) patch.current_state = updates.current_state
+    if (updates.state_updates !== undefined) patch.state_updates = updates.state_updates
+
     const { data } = await this.client
       .from('domain_goals')
-      .update({ statement, reviewed_at: now, updated_at: now })
+      .update(patch)
       .eq('id', id)
       .select('*')
       .single()
@@ -1188,6 +1197,8 @@ CREATE TABLE IF NOT EXISTS domain_goals (
   domain TEXT NOT NULL,
   customer_id UUID,
   statement TEXT NOT NULL,
+  current_state TEXT,
+  state_updates JSONB DEFAULT '[]'::jsonb,
   reviewed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

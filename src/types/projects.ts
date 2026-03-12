@@ -33,10 +33,21 @@ export interface Project {
   updated_at: string
 }
 
+export interface StateUpdate {
+  date: string
+  projectId: string
+  projectName: string
+  summary: string
+  previousState: string | null
+  newState: string
+}
+
 export interface DomainGoal {
   id: string
   domain: string
   statement: string
+  current_state: string | null
+  state_updates: StateUpdate[]
   reviewed_at: string
   created_at: string
   updated_at: string
