@@ -10,6 +10,9 @@ const CUSTOMER_IDS: Record<string, string> = {
   omnissa: '926a785c-2964-4eef-973c-c82f768d8a56',
   fbs: 'fdd7ce7f-5194-4dae-91c5-fd6b1b4d6a88',
   personal: 'fc64558e-2740-4005-883f-53388b7edad7',
+  health: '04e9a106-0199-49cb-a59f-26e52182feaf',
+  ica: '20b88992-f422-440e-bcfd-eca80f85792d',
+  masonic: '155b7805-76b3-4b0d-8595-610017775a2c',
 }
 
 /** Supabase Auth user ID for the owner (used for push notifications, etc.) */

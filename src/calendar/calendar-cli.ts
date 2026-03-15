@@ -4,6 +4,7 @@
  */
 
 import { getTomorrowEvents, getEventsInRange } from './apple-calendar.js'
+import { domainToCustomerId } from '../util/domain.js'
 
 export async function handleCalendarTomorrow(): Promise<void> {
   const events = await getTomorrowEvents()
@@ -94,6 +95,7 @@ export async function handleCalendarSync(opts: {
         source: 'elle',
         external_id: externalId,
         notes: event.notes || undefined,
+        customer_id: domainToCustomerId(domain),
       })
       upserted++
     } catch (e: unknown) {
